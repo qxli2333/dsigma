@@ -1,0 +1,371 @@
+{
+  "status": "passed",
+  "artifact_root": "/pscratch/sd/q/qinxunli/dsigma_gpu_validation",
+  "versions": {
+    "dsigma": "1.1.0",
+    "numpy": "2.4.6",
+    "scipy": "1.18.0",
+    "astropy": "8.0.1",
+    "cupy": "14.2.0",
+    "driver": 13020,
+    "runtime": 12090
+  },
+  "gpu": "NVIDIA A100-PCIE-40GB",
+  "reference_sha256": "738f9e1b86003c8d17cebc3aca0bb9114dce4e49ed7994e537493af22de8500c",
+  "source_fingerprints": {
+    "z": "309374c5d43338296a64ff3fecd00deddb027e7a8885543da2cdd81a6d3db891",
+    "ra": "e30bacbe7372815cb9545d75cd2c7cbedae3ba614cb32824d222cd74b8e816ae",
+    "dec": "4af5e6aea151238fa2366fef1e5a14446f9345a2d679dab1ed9c36906543b09e",
+    "w": "ebf4b05979883b48d12a80ac8636bb55905dcda4a4ae2ba0b90bda2f21e82b2f",
+    "e_1": "ae9b73bcc34b5949e3811eef384a00220d48ea8d80019c5b5187fd5cba0b29b1",
+    "e_2": "9abfffeec32dc5e062187497318ee8473fcdd37dbf08c58a5da32aa7082bc642",
+    "z_bin": "e8078126b138e592753de158838160a07a81f7109533da609a7fe09708837507"
+  },
+  "lens_fingerprints": {
+    "RA": "a35afc2d64efa4996e278ebc4eacf0737b626b2b65b5a86c97f3a1ebe5e64066",
+    "DEC": "6b0175ad3c540ba2dc543d454c2d6529ccccd59b5ff9fbeeff018057ec4308c8",
+    "Z": "3187c95c26a334f9a6b20ff7ed6d0a4e017c0641d714faaa22cf826f3e2fe01d",
+    "LOGMBH": "fc35027fc5ddbd7608c6febe87e18b81a159f785aa2d950746f5e202d1166c09"
+  },
+  "nz_fingerprints": {
+    "z": "aa5744da78eb9b19baa25eda4044df6d3dea35fdc011d8a0e7e8d92969e40928",
+    "n": "58340710a01aa328f208ac7827f0e4b893a17f56e2116b357adde3b2fd39e7eb"
+  },
+  "n_lens": 18783,
+  "n_source": 88638229,
+  "bins_Mpc": [
+    0.02955956251847473,
+    0.04684874940765928,
+    0.07425026401151581,
+    0.11767873797029188,
+    0.18650823070653072,
+    0.29559562518474736,
+    0.46848749407659307,
+    0.7425026401151585,
+    1.1767873797029187,
+    1.865082307065307,
+    2.9559562518474736,
+    4.684874940765931,
+    7.425026401151588,
+    11.767873797029187,
+    18.65082307065308,
+    29.559562518474728
+  ],
+  "seed": 42,
+  "profiles": [
+    {
+      "bin": "mbh5.00_7.47",
+      "lenses": 2470,
+      "regions": 64,
+      "samples": [
+        64,
+        15
+      ]
+    },
+    {
+      "bin": "mbh7.47_7.84",
+      "lenses": 3989,
+      "regions": 64,
+      "samples": [
+        64,
+        15
+      ]
+    },
+    {
+      "bin": "mbh7.84_8.16",
+      "lenses": 4245,
+      "regions": 64,
+      "samples": [
+        64,
+        15
+      ]
+    },
+    {
+      "bin": "mbh8.16_8.50",
+      "lenses": 4180,
+      "regions": 64,
+      "samples": [
+        64,
+        15
+      ]
+    },
+    {
+      "bin": "mbh8.50_11.00",
+      "lenses": 3899,
+      "regions": 64,
+      "samples": [
+        64,
+        15
+      ]
+    }
+  ],
+  "tolerances": {
+    "signal_covariance_rtol": 1e-08,
+    "signal_covariance_atol": 1e-10,
+    "pair_statistics": "abs(error) <= 1e-10*max(1, abs(CPU sum)); stricter than absolute-contribution bound",
+    "counts": "exact"
+  },
+  "checks": [
+    "sum w_ls",
+    "sum w_ls e_t",
+    "sum w_ls z_s",
+    "sum w_ls e_t sigma_crit",
+    "sum w_ls sigma_crit",
+    "sum w_ls z_l",
+    "parallel sum 1",
+    "parallel sum w_ls",
+    "parallel sum w_ls e_t",
+    "parallel sum w_ls z_s",
+    "parallel sum w_ls e_t sigma_crit",
+    "parallel sum w_ls sigma_crit",
+    "parallel sum w_ls z_l",
+    "cross",
+    "cross sigma_crit",
+    "mbh5.00_7.47_t_signal",
+    "mbh5.00_7.47_t_samples",
+    "mbh5.00_7.47_t_covariance",
+    "mbh5.00_7.47_x_signal",
+    "mbh5.00_7.47_x_samples",
+    "mbh5.00_7.47_x_covariance",
+    "mbh7.47_7.84_t_signal",
+    "mbh7.47_7.84_t_samples",
+    "mbh7.47_7.84_t_covariance",
+    "mbh7.47_7.84_x_signal",
+    "mbh7.47_7.84_x_samples",
+    "mbh7.47_7.84_x_covariance",
+    "mbh7.84_8.16_t_signal",
+    "mbh7.84_8.16_t_samples",
+    "mbh7.84_8.16_t_covariance",
+    "mbh7.84_8.16_x_signal",
+    "mbh7.84_8.16_x_samples",
+    "mbh7.84_8.16_x_covariance",
+    "mbh8.16_8.50_t_signal",
+    "mbh8.16_8.50_t_samples",
+    "mbh8.16_8.50_t_covariance",
+    "mbh8.16_8.50_x_signal",
+    "mbh8.16_8.50_x_samples",
+    "mbh8.16_8.50_x_covariance",
+    "mbh8.50_11.00_t_signal",
+    "mbh8.50_11.00_t_samples",
+    "mbh8.50_11.00_t_covariance",
+    "mbh8.50_11.00_x_signal",
+    "mbh8.50_11.00_x_samples",
+    "mbh8.50_11.00_x_covariance",
+    "random_samples",
+    "random_covariance"
+  ],
+  "production_checks": {
+    "status": "passed",
+    "source_fingerprints_match": true,
+    "checks": [
+      "mbh5.00_7.47_t: signal",
+      "mbh5.00_7.47_t: samples",
+      "mbh5.00_7.47_t: covariance",
+      "mbh5.00_7.47_x: signal",
+      "mbh5.00_7.47_x: samples",
+      "mbh5.00_7.47_x: covariance",
+      "mbh7.47_7.84_t: signal",
+      "mbh7.47_7.84_t: samples",
+      "mbh7.47_7.84_t: covariance",
+      "mbh7.47_7.84_x: signal",
+      "mbh7.47_7.84_x: samples",
+      "mbh7.47_7.84_x: covariance",
+      "mbh7.84_8.16_t: signal",
+      "mbh7.84_8.16_t: samples",
+      "mbh7.84_8.16_t: covariance",
+      "mbh7.84_8.16_x: signal",
+      "mbh7.84_8.16_x: samples",
+      "mbh7.84_8.16_x: covariance",
+      "mbh8.16_8.50_t: signal",
+      "mbh8.16_8.50_t: samples",
+      "mbh8.16_8.50_t: covariance",
+      "mbh8.16_8.50_x: signal",
+      "mbh8.16_8.50_x: samples",
+      "mbh8.16_8.50_x: covariance",
+      "mbh8.50_11.00_t: signal",
+      "mbh8.50_11.00_t: samples",
+      "mbh8.50_11.00_t: covariance",
+      "mbh8.50_11.00_x: signal",
+      "mbh8.50_11.00_x: samples",
+      "mbh8.50_11.00_x: covariance"
+    ]
+  },
+  "timings_seconds": {
+    "source_read_prepare": 57.73795703500218,
+    "cuda_pair_compile": 0.3178096970077604,
+    "gpu_precompute": 78.06793761899462,
+    "cpu_single_precompute": 117.6368541069969,
+    "cpu_parallel_precompute": 78.67644852299418,
+    "cpu_cross_precompute": 124.66420311000547,
+    "mbh5.00_7.47_cpu_regions": 0.27312323899241164,
+    "mbh5.00_7.47_t_cpu_stack": 0.0034640340018086135,
+    "mbh5.00_7.47_t_gpu_stack": 1.1233000590000302,
+    "mbh5.00_7.47_t_cpu_jk": 0.20766325399745256,
+    "mbh5.00_7.47_t_gpu_jk": 6.770755318008014,
+    "mbh5.00_7.47_t_gpu_jk_warm": 0.03817114701087121,
+    "mbh5.00_7.47_x_cpu_stack": 0.002556390012614429,
+    "mbh5.00_7.47_x_gpu_stack": 0.011977713991655037,
+    "mbh5.00_7.47_x_cpu_jk": 0.19431065500248224,
+    "mbh5.00_7.47_x_gpu_jk": 0.00609284000529442,
+    "mbh5.00_7.47_x_gpu_jk_warm": 0.005757895007263869,
+    "mbh5.00_7.47_gpu_region_aggregation": 0.004327696005930193,
+    "mbh5.00_7.47_gpu_batched_stack": 0.00023828500707168132,
+    "mbh5.00_7.47_gpu_covariance": 0.0002791909937513992,
+    "mbh7.47_7.84_cpu_regions": 0.12368306498683523,
+    "mbh7.47_7.84_t_cpu_stack": 0.0032122750126291066,
+    "mbh7.47_7.84_t_gpu_stack": 0.001566132006701082,
+    "mbh7.47_7.84_t_cpu_jk": 0.26516025701130275,
+    "mbh7.47_7.84_t_gpu_jk": 0.04474443499930203,
+    "mbh7.47_7.84_t_gpu_jk_warm": 0.005766622009105049,
+    "mbh7.47_7.84_x_cpu_stack": 0.003376299995579757,
+    "mbh7.47_7.84_x_gpu_stack": 0.0014446059940382838,
+    "mbh7.47_7.84_x_cpu_jk": 0.2617345939943334,
+    "mbh7.47_7.84_x_gpu_jk": 0.006954950004001148,
+    "mbh7.47_7.84_x_gpu_jk_warm": 0.006288374992436729,
+    "mbh7.47_7.84_gpu_region_aggregation": 0.004481724012293853,
+    "mbh7.47_7.84_gpu_batched_stack": 0.0002059250109596178,
+    "mbh7.47_7.84_gpu_covariance": 0.0003660629881778732,
+    "mbh7.84_8.16_cpu_regions": 0.10309954099648166,
+    "mbh7.84_8.16_t_cpu_stack": 0.0033588380028959364,
+    "mbh7.84_8.16_t_gpu_stack": 0.0016133409953908995,
+    "mbh7.84_8.16_t_cpu_jk": 0.2741411080060061,
+    "mbh7.84_8.16_t_gpu_jk": 0.00935497900354676,
+    "mbh7.84_8.16_t_gpu_jk_warm": 0.005590392989688553,
+    "mbh7.84_8.16_x_cpu_stack": 0.00319965100788977,
+    "mbh7.84_8.16_x_gpu_stack": 0.0016863269993336871,
+    "mbh7.84_8.16_x_cpu_jk": 0.2750488830060931,
+    "mbh7.84_8.16_x_gpu_jk": 0.00719001900870353,
+    "mbh7.84_8.16_x_gpu_jk_warm": 0.0053559359948849306,
+    "mbh7.84_8.16_gpu_region_aggregation": 0.0042158169962931424,
+    "mbh7.84_8.16_gpu_batched_stack": 0.00018930301303043962,
+    "mbh7.84_8.16_gpu_covariance": 0.000720875003025867,
+    "mbh8.16_8.50_cpu_regions": 0.14951737799856346,
+    "mbh8.16_8.50_t_cpu_stack": 0.004103418003069237,
+    "mbh8.16_8.50_t_gpu_stack": 0.0015920409932732582,
+    "mbh8.16_8.50_t_cpu_jk": 0.30214503000024706,
+    "mbh8.16_8.50_t_gpu_jk": 0.14683837800112087,
+    "mbh8.16_8.50_t_gpu_jk_warm": 0.005942500996752642,
+    "mbh8.16_8.50_x_cpu_stack": 0.0034756160021061078,
+    "mbh8.16_8.50_x_gpu_stack": 0.012021073998766951,
+    "mbh8.16_8.50_x_cpu_jk": 0.27004719800606836,
+    "mbh8.16_8.50_x_gpu_jk": 0.008073757999227382,
+    "mbh8.16_8.50_x_gpu_jk_warm": 0.005681924012606032,
+    "mbh8.16_8.50_gpu_region_aggregation": 0.004021434986498207,
+    "mbh8.16_8.50_gpu_batched_stack": 0.0001673520018812269,
+    "mbh8.16_8.50_gpu_covariance": 0.00028709501202683896,
+    "mbh8.50_11.00_cpu_regions": 0.13477452499500941,
+    "mbh8.50_11.00_t_cpu_stack": 0.0033888550096889958,
+    "mbh8.50_11.00_t_gpu_stack": 0.029770389010082,
+    "mbh8.50_11.00_t_cpu_jk": 0.26406163700448815,
+    "mbh8.50_11.00_t_gpu_jk": 0.07673508799052797,
+    "mbh8.50_11.00_t_gpu_jk_warm": 0.008719613993889652,
+    "mbh8.50_11.00_x_cpu_stack": 0.0034842619934352115,
+    "mbh8.50_11.00_x_gpu_stack": 0.0020237569988239557,
+    "mbh8.50_11.00_x_cpu_jk": 0.25798578800458927,
+    "mbh8.50_11.00_x_gpu_jk": 0.006248670993954875,
+    "mbh8.50_11.00_x_gpu_jk_warm": 0.005485957997734658,
+    "mbh8.50_11.00_gpu_region_aggregation": 0.004095333002624102,
+    "mbh8.50_11.00_gpu_batched_stack": 0.00018733000615611672,
+    "mbh8.50_11.00_gpu_covariance": 0.0002965340099763125,
+    "cpu_random_precompute": 58.03751036000904,
+    "gpu_random_precompute_cached": 43.2170551839954
+  },
+  "pipeline_seconds": {
+    "cpu_single": 303.42913004304864,
+    "gpu_including_cold": 145.17788597497565,
+    "cpu_256": 107.44696090900106
+  },
+  "memory": {
+    "validation_parent_peak_rss_bytes": 28351348736,
+    "gpu_pool_peak_reserved_bytes": 13151121920,
+    "device_global_peak_used_bytes": 14615445504,
+    "cpu_256_family_peak_pss_bytes": 16509503488,
+    "gpu_sampling_interval_seconds": 0.1,
+    "cpu_pss_sampling_interval_seconds": 2
+  },
+  "benchmark_code_sha256": {
+    "dsigma/gpu.py": "9f65aa678988928938d0d344c1eb702c56f09137f4a288cb3ee2cd87b77ac6a0",
+    "dsigma/gpu_pairs.cu": "288bef83f70aca929865008b6ff16752d8df76ca4911120fb839a84b34ce84d9",
+    "dsigma/precompute.py": "12ec25cfca9ee887eb412d12c98d01ae5a69d3b454b300a722b426a1f125b637",
+    "examples/gpu_validation.py": "f5737ac072a22fe2426bc37f96a830f218a0caf940815642f45aa29745644f8c"
+  },
+  "reviewed_code_sha256": {
+    "dsigma/gpu.py": "1a8f705235acf974a6354f44603b44f9fe7fe672daba030b04b31d3a7df5965e",
+    "dsigma/gpu_pairs.cu": "288bef83f70aca929865008b6ff16752d8df76ca4911120fb839a84b34ce84d9",
+    "dsigma/precompute.py": "12ec25cfca9ee887eb412d12c98d01ae5a69d3b454b300a722b426a1f125b637"
+  },
+  "cpu_jobs": {
+    "timing": "60515378",
+    "memory": "60515627"
+  },
+  "regressions": {
+    "des_subset_final": {
+      "status": "passed",
+      "n_lens": 3757,
+      "n_source": 196617,
+      "checks": 53
+    },
+    "decade_ngc_subset_final": {
+      "status": "passed",
+      "n_lens": 10321,
+      "n_source": 200000,
+      "checks": 51
+    },
+    "decade_sgc_subset_final": {
+      "status": "passed",
+      "n_lens": 1784,
+      "n_source": 200000,
+      "checks": 51
+    }
+  },
+  "profiler": {
+    "samples": 64,
+    "radial_bins": 15,
+    "runs": [
+      "cold",
+      "warm"
+    ],
+    "launches": [
+      [
+        "grouped_finite",
+        53,
+        1,
+        1,
+        128,
+        1,
+        1,
+        27680
+      ],
+      [
+        "void cutlass::Kernel2<cutlass_80_tensorop_d884gemm_32x32_16x5_nt_align1>(T1::Params)",
+        1,
+        1,
+        1,
+        128,
+        1,
+        1,
+        7776
+      ],
+      [
+        "grouped_finite",
+        53,
+        1,
+        1,
+        128,
+        1,
+        1,
+        56096
+      ],
+      [
+        "void cutlass::Kernel2<cutlass_80_tensorop_d884gemm_32x32_16x5_nt_align1>(T1::Params)",
+        1,
+        1,
+        1,
+        128,
+        1,
+        1,
+        7008
+      ]
+    ]
+  }
+}

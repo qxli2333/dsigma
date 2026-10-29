@@ -188,7 +188,8 @@ def smooth_correlation_matrix(cor, sigma, exclude_diagonal=True):
 
 
 def jackknife_resampling(f, table_l, table_r=None, table_l_2=None,
-                         table_r_2=None, **kwargs):
+                         table_r_2=None, backend='cpu', return_device=False,
+                         return_samples=False, batch_size=64, **kwargs):
     """Compute the covariance of a function from jackknife re-sampling.
 
     Parameters
@@ -212,6 +213,15 @@ def jackknife_resampling(f, table_l, table_r=None, table_l_2=None,
         Precompute results for a second set of random lenses. The input
         function must accept the second random lens table via the `table_r_2`
         keyword argument. Default is None.
+    backend : {'cpu', 'gpu'}, optional
+        GPU batches built-in statistics and profile differences over regions;
+        arbitrary Python callables require CPU.
+    return_device : bool, optional
+        Keep covariance and optional samples on the GPU.
+    return_samples : bool, optional
+        Return (covariance, samples); samples follow sorted lens region labels.
+    batch_size : int, optional
+        GPU sample batch size, default 64, minimum 2.
     kwargs : dict, optional
         Additional keyword arguments to be passed to the function.
 
@@ -221,6 +231,16 @@ def jackknife_resampling(f, table_l, table_r=None, table_l_2=None,
         Covariance matrix of the result derived from jackknife re-sampling.
 
     """
+    from .gpu import check_backend
+    check_backend(backend)
+    if backend == 'gpu':
+        from .gpu import jackknife
+        return jackknife(f, table_l, table_r, table_l_2, table_r_2,
+                         return_device=return_device, return_samples=return_samples,
+                         batch_size=batch_size, **kwargs)
+    if return_device:
+        raise ValueError('return_device requires backend="gpu".')
+
     samples = []
 
     for field_jk in np.unique(table_l['field_jk']):
@@ -234,5 +254,7 @@ def jackknife_resampling(f, table_l, table_r=None, table_l_2=None,
 
         samples.append(f(table_l[mask_l], **kwargs))
 
-    return ((len(np.unique(table_l['field_jk'])) - 1) *
-            np.cov(np.array(samples), rowvar=False, ddof=0))
+    samples = np.array(samples)
+    covariance = ((len(np.unique(table_l['field_jk'])) - 1) *
+                  np.cov(samples, rowvar=False, ddof=0))
+    return (covariance, samples) if return_samples else covariance

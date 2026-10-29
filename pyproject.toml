@@ -15,6 +15,12 @@ dependencies = ["numpy", "astropy", "scipy", "scikit-learn", "astropy-healpix",
                 "tqdm"]
 dynamic = ["version"]
 
+[project.optional-dependencies]
+gpu = ["cupy-cuda12x>=13"]
+
+[tool.setuptools.package-data]
+dsigma = ["*.cu"]
+
 [project.urls]
 Homepage = "https://github.com/johannesulf/dsigma"
 Documentation = "https://dsigma.readthedocs.io"
@@ -25,3 +31,7 @@ Changelog = "https://github.com/johannesulf/dsigma/blob/main/CHANGELOG.md"
 [tool.setuptools]
 packages = ["dsigma", "dsigma.surveys"]
 dynamic.version = {attr = "dsigma.__version__"}
+
+# Keep the original CI lint gate stable as Ruff's default rules evolve.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
