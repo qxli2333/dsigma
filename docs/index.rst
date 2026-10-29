@@ -28,6 +28,7 @@ Overview
     workflow/precomputation
     workflow/stacking
     workflow/resampling
+    workflow/gpu
     workflow/magnification
 
 .. toctree::
@@ -45,6 +46,7 @@ Overview
     :maxdepth: 1
     :hidden:
 
+    api/gpu
     api/helpers
     api/jackknife
     api/physics

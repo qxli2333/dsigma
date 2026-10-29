@@ -28,3 +28,10 @@ Documentation for `dsigma` with concept introductions, examples, and API documen
 ## License
 
 `dsigma` is licensed under the MIT License.
+
+
+An optional single NVIDIA GPU backend supports FP64 pair computation, stacking,
+batched jackknife samples, and covariance. Install with `pip install '.[gpu]'`
+in a CUDA 12 environment and select `backend='gpu'`. See
+[GPU workflow](docs/workflow/gpu.rst) and the standalone
+[example](examples/gpu_single_device.py). CPU remains the default.

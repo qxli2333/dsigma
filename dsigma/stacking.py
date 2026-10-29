@@ -321,7 +321,7 @@ def tangential_shear(table_l, table_r=None, boost_correction=False,
                      matrix_shear_response_correction=False,
                      shear_responsivity_correction=False,
                      selection_bias_correction=False,
-                     random_subtraction=False, return_table=False):
+                     random_subtraction=False, return_table=False, backend='cpu', return_device=False, component='t'):
     """Compute the mean tangential shear with corrections, if applicable.
 
     Parameters
@@ -347,6 +347,12 @@ def tangential_shear(table_l, table_r=None, boost_correction=False,
     random_subtraction : bool, optional
         If True, subtract the signal around randoms. This can only be done if
         a random catalog is provided. Default is False.
+    backend : {'cpu', 'gpu'}, optional
+        Execution backend, default CPU.
+    return_device : bool, optional
+        Keep the output on the GPU; incompatible with return_table.
+    component : {'t', 'x'}, optional
+        GPU component, default tangential. Cross requires precompute(cross=True).
     return_table : bool, optional
         If True, return a table with many intermediate steps of the
         computation. Otherwise, a simple array with just the final tangential
@@ -367,6 +373,21 @@ def tangential_shear(table_l, table_r=None, boost_correction=False,
         catalog is provided.
 
     """
+    from .gpu import check_backend
+    check_backend(backend)
+    if backend == 'gpu':
+        from .gpu import stack
+        return stack(table_l, table_r, shear=True, return_table=return_table,
+                     return_device=return_device, component=component,
+                     boost_correction=boost_correction,
+                     scalar_shear_response_correction=scalar_shear_response_correction,
+                     matrix_shear_response_correction=matrix_shear_response_correction,
+                     shear_responsivity_correction=shear_responsivity_correction,
+                     selection_bias_correction=selection_bias_correction,
+                     random_subtraction=random_subtraction)
+    if return_device or component != 't':
+        raise ValueError('return_device and cross components require backend="gpu".')
+
     result = Table()
 
     result['rp_min'] = table_l.meta['bins'][:-1]
@@ -429,7 +450,7 @@ def excess_surface_density(table_l, table_r=None,
                            shear_responsivity_correction=False,
                            selection_bias_correction=False,
                            random_subtraction=False,
-                           return_table=False):
+                           return_table=False, backend='cpu', return_device=False, component='t'):
     """Compute the mean excess surface density with corrections, if applicable.
 
     Parameters
@@ -459,6 +480,12 @@ def excess_surface_density(table_l, table_r=None,
     random_subtraction : bool, optional
         If True, subtract the signal around randoms. This can only be done if
         a random catalog is provided. Default is False.
+    backend : {'cpu', 'gpu'}, optional
+        Execution backend, default CPU.
+    return_device : bool, optional
+        Keep the output on the GPU; incompatible with return_table.
+    component : {'t', 'x'}, optional
+        GPU component, default tangential. Cross requires precompute(cross=True).
     return_table : bool, optional
         If True, return a table with many intermediate steps of the
         computation. Otherwise, a simple array with just the final excess
@@ -479,6 +506,22 @@ def excess_surface_density(table_l, table_r=None,
         catalog is provided.
 
     """
+    from .gpu import check_backend
+    check_backend(backend)
+    if backend == 'gpu':
+        from .gpu import stack
+        return stack(table_l, table_r, shear=False, return_table=return_table,
+                     return_device=return_device, component=component,
+                     boost_correction=boost_correction,
+                     scalar_shear_response_correction=scalar_shear_response_correction,
+                     matrix_shear_response_correction=matrix_shear_response_correction,
+                     shear_responsivity_correction=shear_responsivity_correction,
+                     selection_bias_correction=selection_bias_correction,
+                     random_subtraction=random_subtraction,
+                     photo_z_dilution_correction=photo_z_dilution_correction)
+    if return_device or component != 't':
+        raise ValueError('return_device and cross components require backend="gpu".')
+
     result = Table()
 
     result['rp_min'] = table_l.meta['bins'][:-1]
@@ -536,3 +579,28 @@ def excess_surface_density(table_l, table_r=None,
         return result['ds'].data
 
     return result
+
+
+def excess_surface_density_difference(table_l, table_l_2, table_r=None,
+                                      table_r_2=None, **kwargs):
+    """Difference of two density profiles, with matched-region jackknife support.
+
+    Correction options apply to both catalog pairs. Returns an array; use the
+    individual stacking functions to inspect intermediate correction columns.
+    """
+    if kwargs.get('return_table'):
+        raise ValueError('Profile differences return arrays.')
+    return (excess_surface_density(table_l, table_r=table_r, **kwargs) -
+            excess_surface_density(table_l_2, table_r=table_r_2, **kwargs))
+
+
+def tangential_shear_difference(table_l, table_l_2, table_r=None,
+                                table_r_2=None, **kwargs):
+    """Difference of two shear profiles with corrections applied to each pair."""
+    if kwargs.get('return_table'):
+        raise ValueError('Profile differences return arrays.')
+    return (tangential_shear(table_l, table_r=table_r, **kwargs) -
+            tangential_shear(table_l_2, table_r=table_r_2, **kwargs))
+
+
+__all__ += ['excess_surface_density_difference', 'tangential_shear_difference']

@@ -4,6 +4,22 @@ Notable changes to dsigma will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- Optional CuPy/CUDA backend for FP64 precomputation, stacking, batched
+  jackknife samples and covariance, selected with `backend='gpu'`.
+- Reusable GPU sessions, device catalogs, simultaneous tangential/cross
+  accumulation, and two-catalog profile differences.
+- Scientific parity tests, standalone examples, NVTX profiling, and Perlmutter
+  real-catalog acceptance and CPU benchmark runners.
+
+### Fixed
+
+- Reject source redshift-bin indices equal to the distribution column count,
+  preventing out-of-bounds access in either pair engine.
+
 ## [1.1.0] - 2025-06-25
 
 ### Added

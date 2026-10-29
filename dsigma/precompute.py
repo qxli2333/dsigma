@@ -183,7 +183,8 @@ def precompute(
         table_l, table_s, bins, table_c=None, table_n=None,
         cosmology=FlatLambdaCDM(H0=100, Om0=0.3), comoving=True,
         weighting=-2, lens_source_cut=0, nside=256, n_jobs=1,
-        progress_bar=False):
+        progress_bar=False, backend='cpu', session=None,
+        return_device=False, cross=False):
     """For all lenses in the catalog, precompute the lensing statistics.
 
     Parameters
@@ -234,9 +235,19 @@ def precompute(
         Whether to show a progress bar for the main loop over lens pixels.
         Default is False.
 
+    backend : {'cpu', 'gpu'}, optional
+        Execution backend. CPU remains the default; GPU requires CuPy/CUDA.
+    session : dsigma.gpu.GPUSession, optional
+        Reuse immutable source data and its spatial index across GPU calls.
+    return_device : bool, optional
+        Return a DeviceCatalog without transferring statistics to the host.
+    cross : bool, optional
+        Also accumulate the cross component in the same GPU pairing pass.
+        Its sign matches rotating sources to (e_2, -e_1).
+
     Returns
     -------
-    table_l : astropy.table.Table
+    table_l : astropy.table.Table or dsigma.gpu.DeviceCatalog
         Lens catalog with the pre-computation results attached to the table.
 
     Raises
@@ -245,6 +256,15 @@ def precompute(
         If there are problems in the input.
 
     """
+    from .gpu import check_backend
+    check_backend(backend)
+    if backend == 'cpu' and (session is not None or return_device or cross):
+        raise ValueError('session, return_device and cross require backend="gpu".')
+    if backend == 'gpu' and (len(table_l) == 0 or len(table_s) == 0):
+        raise ValueError('Lens and source catalogs must be non-empty.')
+    if backend == 'gpu' and (len(bins) < 2 or np.any(np.diff(np.asarray(bins)) <= 0)):
+        raise ValueError('bins must contain strictly increasing edges.')
+
     try:
         assert cosmology.Ok0 == 0
     except AssertionError:
@@ -267,59 +287,81 @@ def precompute(
                 np.any(table_s['z_bin'] < 0)):
             raise ValueError('The `z_bin` column in the source table must ' +
                              'contain only non-negative integers.')
-        if np.amax(table_s['z_bin']) > table_n['n'].data.shape[1]:
+        if np.amax(table_s['z_bin']) >= table_n['n'].data.shape[1]:
             raise ValueError('The source table contains more redshift bins ' +
                              'than where passed via the nz argument.')
 
+    source_cache = None
+    if backend == 'gpu':
+        from .gpu import GPUSession
+        session = GPUSession() if session is None else session
+        token = (id(table_s), nside, repr(cosmology),
+                 id(lens_source_cut) if not isinstance(lens_source_cut, (numbers.Number, type(None))) else lens_source_cut,
+                 id(table_n), comoving)
+        if session.source_token is not None and session.source_token != token:
+            raise ValueError('A session is bound to one source preparation; create a new session.')
+        source_cache = session._prepared_source
+
     hp = HEALPix(nside, order='ring')
     pix_l = hp.lonlat_to_healpix(table_l['ra'] * u.deg, table_l['dec'] * u.deg)
-    pix_s = hp.lonlat_to_healpix(table_s['ra'] * u.deg, table_s['dec'] * u.deg)
+    pix_s = (hp.lonlat_to_healpix(table_s['ra'] * u.deg, table_s['dec'] * u.deg)
+             if source_cache is None else source_cache[0])
     argsort_pix_l = np.argsort(pix_l)
-    argsort_pix_s = np.argsort(pix_s)
+    argsort_pix_s = np.argsort(pix_s) if source_cache is None else source_cache[1]
     u_pix_l, n_pix_l = np.unique(pix_l, return_counts=True)
     u_pix_l = np.ascontiguousarray(u_pix_l)
     n_pix_l = np.ascontiguousarray(np.cumsum(n_pix_l))
-    u_pix_s, n_pix_s = np.unique(pix_s, return_counts=True)
-    u_pix_s = np.ascontiguousarray(u_pix_s)
-    n_pix_s = np.ascontiguousarray(np.cumsum(n_pix_s))
+    if source_cache is None:
+        u_pix_s, n_pix_s = np.unique(pix_s, return_counts=True)
+        u_pix_s = np.ascontiguousarray(u_pix_s)
+        n_pix_s = np.ascontiguousarray(np.cumsum(n_pix_s))
+    else:
+        u_pix_s, n_pix_s = source_cache[3:5]
 
     table_engine_l = {}
-    table_engine_s = {}
+    table_engine_s = {} if source_cache is None else source_cache[2]
 
     table_engine_l['z'] = np.ascontiguousarray(
         table_l['z'][argsort_pix_l], dtype=np.float64)
-    table_engine_s['z'] = np.ascontiguousarray(
-        table_s['z'][argsort_pix_s], dtype=np.float64)
+    if source_cache is None:
+        table_engine_s['z'] = np.ascontiguousarray(
+            table_s['z'][argsort_pix_s], dtype=np.float64)
 
     for f, f_name in zip([np.sin, np.cos], ['sin', 'cos']):
         for table, argsort_pix, table_engine in zip(
                 [table_l, table_s], [argsort_pix_l, argsort_pix_s],
                 [table_engine_l, table_engine_s]):
+            if source_cache is not None and table_engine is table_engine_s:
+                continue
             for angle in ['ra', 'dec']:
                 table_engine['{} {}'.format(f_name, angle)] =\
                     np.ascontiguousarray(f(np.deg2rad(table[angle]))[
                         argsort_pix])
 
-    for key in ['w', 'e_1', 'e_2', 'm', 'e_rms', 'm_sel', 'R_11', 'R_22',
-                'R_12', 'R_21']:
-        if key in table_s.colnames:
-            table_engine_s[key] = np.ascontiguousarray(
-                table_s[key][argsort_pix_s], dtype=np.float64)
+    if source_cache is None:
+        for key in ['w', 'e_1', 'e_2', 'm', 'e_rms', 'm_sel', 'R_11', 'R_22',
+                    'R_12', 'R_21']:
+            if key in table_s.colnames:
+                table_engine_s[key] = np.ascontiguousarray(
+                    table_s[key][argsort_pix_s], dtype=np.float64)
 
-    if lens_source_cut is None:
-        z_l_max = np.repeat(np.amax(table_l['z']) + 1, len(table_s))
-    elif isinstance(lens_source_cut, numbers.Number):
-        z_l_max = table_s['z'] - lens_source_cut
-    else:
-        z_l_max = np.array(lens_source_cut)
+        if lens_source_cut is None:
+            z_l_max = (np.full(len(table_s), np.inf) if backend == 'gpu' else
+                       np.repeat(np.amax(table_l['z']) + 1, len(table_s)))
+        elif isinstance(lens_source_cut, numbers.Number):
+            z_l_max = table_s['z'] - lens_source_cut
+        else:
+            z_l_max = np.array(lens_source_cut)
 
-    table_engine_s['z_l_max'] = np.ascontiguousarray(
-        z_l_max[argsort_pix_s], dtype=np.float64)
+        table_engine_s['z_l_max'] = np.ascontiguousarray(
+            z_l_max[argsort_pix_s], dtype=np.float64)
 
     for table, argsort_pix, table_engine in zip(
             [table_l, table_s], [argsort_pix_l, argsort_pix_s],
             [table_engine_l, table_engine_s]):
 
+        if source_cache is not None and table_engine is table_engine_s:
+            continue
         z_min = np.amin(table['z'])
         z_max = np.amax(table['z'])
         z_interp = np.linspace(
@@ -379,13 +421,14 @@ def precompute(
             z_mean[i] = np.average(table_n['z'], weights=table_n['n'][:, i])
         table_engine_l['sigma_crit_eff'] = np.ascontiguousarray(
             sigma_crit_eff, dtype=np.float64)
-        table_engine_s['z_bin'] = np.ascontiguousarray(
-            table_s['z_bin'][argsort_pix_s], dtype=int)
-        # Overwrite the photometric redshifts in the source table. These
-        # redshifts will be used to compute the mean source redshifts for each
-        # lens.
-        table_engine_s['z'] = np.ascontiguousarray(
-            z_mean[table_s['z_bin']][argsort_pix_s], dtype=np.float64)
+        if source_cache is None:
+            table_engine_s['z_bin'] = np.ascontiguousarray(
+                table_s['z_bin'][argsort_pix_s], dtype=int)
+            # Overwrite the photometric redshifts in the source table. These
+            # redshifts will be used to compute the mean source redshifts for each
+            # lens.
+            table_engine_s['z'] = np.ascontiguousarray(
+                z_mean[table_s['z_bin']][argsort_pix_s], dtype=np.float64)
 
     elif table_c is not None and table_s is not None:
         raise ValueError('table_c and table_n cannot both be given.')
@@ -410,6 +453,9 @@ def precompute(
             ('R_21' in table_s.colnames) and ('R_22' in table_s.colnames)):
         key_list.append('sum w_ls R_T')
 
+    if cross:
+        key_list.extend(['sum w_ls e_x', 'sum w_ls e_x sigma_crit'])
+
     for key in key_list:
         table_engine_r[key] = np.ascontiguousarray(
             np.zeros(n_results, dtype=(
@@ -430,6 +476,43 @@ def precompute(
             theta_bins *= (1 + np.repeat(z_l, len(bins))).flatten()
 
     dist_3d_sq_bins = np.minimum(4 * np.sin(theta_bins / 2.0)**2, 2.0)
+
+    if backend == 'gpu':
+        from .gpu import GPUSession, DeviceCatalog, cupy, _to_device
+        cp = cupy()
+        # The session owns references so cached table IDs cannot be reused.
+        session._source_table = table_s
+        session._table_n = table_n
+        session._cut = lens_source_cut
+        device_results = session.pair(
+            u_pix_l, n_pix_l, u_pix_s, n_pix_s,
+            dist_3d_sq_bins.reshape(len(table_l), len(bins)),
+            table_engine_l, table_engine_s, key_list, nside, comoving,
+            weighting, token)
+        session._prepared_source = (pix_s, argsort_pix_s, table_engine_s, u_pix_s, n_pix_s)
+        inv = cp.asarray(np.argsort(argsort_pix_l))
+        columns = {k: v[inv] for k, v in device_results.items()}
+        columns['sum w_ls z_l'] = _to_device(table_l['z'])[:, None] * columns['sum w_ls']
+        if 'f_bias' in table_engine_l:
+            f = cp.asarray(table_engine_l['f_bias'])[inv, None]
+            for key in ['sum w_ls sigma_crit', 'sum w_ls e_t sigma_crit']:
+                columns[key + ' f_bias'] = columns[key] * f
+            if cross:
+                columns['sum w_ls e_x sigma_crit f_bias'] = columns['sum w_ls e_x sigma_crit'] * f
+        if 'delta z_s' in table_engine_l:
+            columns['sum w_ls z_s'] -= columns['sum w_ls'] * cp.asarray(table_engine_l['delta z_s'])[inv, None]
+        meta = dict(table_l.meta, bins=bins, comoving=comoving,
+                    H0=cosmology.H0.value, Ok0=cosmology.Ok0,
+                    Om0=cosmology.Om0, weighting=weighting)
+        if return_device:
+            for key in ['w_sys', 'field_jk']:
+                if key in table_l.colnames:
+                    columns[key] = _to_device(table_l[key])
+            return DeviceCatalog(columns, meta)
+        for key, value in columns.items():
+            table_l[key] = cp.asnumpy(value)
+        table_l.meta.update(meta)
+        return table_l
 
     # When running in parrallel, replace numpy arrays with shared-memory
     # multiprocessing arrays.
