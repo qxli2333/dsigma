@@ -1,21 +1,41 @@
 [build-system]
-requires = ["setuptools>=77.0.0", "wheel", "Cython"]
+requires = ["setuptools>=77.0.0", "Cython"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "dsigma"
+description = "A Galaxy-Galaxy Lensing Python Package"
 requires-python = ">=3.9"
-authors = [{name = "Johannes U. Lange", email = "jlange@american.edu"},
-           {name = "Song Huang"}]
+authors = [
+  {name = "Johannes U. Lange", email = "jlange@american.edu"},
+  {name = "Song Huang", email = "shuang@tsinghua.edu.cn"}
+]
 readme = "README.md"
 keywords = ["astronomy", "weak-lensing"]
 license = "MIT"
-license-files = ["LICENSE"]
-dependencies = ["numpy", "astropy", "scipy", "scikit-learn", "astropy-healpix",
-                "tqdm"]
+dependencies = [
+  "astropy",
+  "astropy-healpix",
+  "numpy",
+  "scikit-learn",
+  "scipy",
+  "tqdm"
+]
 dynamic = ["version"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering :: Astronomy",
+  "Intended Audience :: Science/Research"]
 
 [project.optional-dependencies]
+process = ["h5py>=3.0.0"]
 gpu = ["cupy-cuda12x>=13"]
 
 [tool.setuptools.package-data]
@@ -28,10 +48,25 @@ Repository = "https://github.com/johannesulf/dsigma.git"
 Issues = "https://github.com/johannesulf/dsigma/issues"
 Changelog = "https://github.com/johannesulf/dsigma/blob/main/CHANGELOG.md"
 
-[tool.setuptools]
-packages = ["dsigma", "dsigma.surveys"]
-dynamic.version = {attr = "dsigma.__version__"}
+[project.scripts]
+dsigma-process-decade = "dsigma.scripts.process_decade:process_decade"
+dsigma-process-des-y3 = "dsigma.scripts.process_des_y3:process_des_y3"
+dsigma-process-hsc-y3 = "dsigma.scripts.process_hsc_y3:process_hsc_y3"
+dsigma-process-kids-legacy = "dsigma.scripts.process_kids_legacy:process_kids_legacy"
 
-# Keep the original CI lint gate stable as Ruff's default rules evolve.
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.dynamic]
+version = {attr = "dsigma.__version__"}
+
+[[tool.setuptools.ext-modules]]
+name = "dsigma.precompute_engine"
+sources = ["dsigma/precompute_engine.pyx"]
+extra-compile-args = ["-O2"]
+
+[tool.setuptools.packages.find]
+include = ["dsigma*"]
+
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]

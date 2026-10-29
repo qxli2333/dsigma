@@ -1,5 +1,7 @@
 #!/usr/bin/env python
-"""Reproducible Perlmutter scientific and timing acceptance against CPU.
+"""Historical benchmark: run at the frozen commit in docs/gpu_validation.md.
+
+Reproducible Perlmutter scientific and timing acceptance against CPU.
 
 Run from an installed checkout. All outputs go to --output (scratch by default).
 The external measurement module is read as a source adapter, never modified.

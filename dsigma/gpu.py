@@ -78,7 +78,8 @@ def _to_device(value):
 
 class DeviceCatalog:
     """Device-resident precompute columns with explicit host conversion."""
-    def __init__(self, columns, meta=None):
+    def __init__(self, columns, meta=None, units=None):
+        self.units = dict(units or {})
         self.columns = columns
         self.meta = deepcopy(meta or {})
 
@@ -92,26 +93,31 @@ class DeviceCatalog:
     def __getitem__(self, item):
         if isinstance(item, str):
             return self.columns[item]
-        return DeviceCatalog({k: v[item] for k, v in self.columns.items()}, self.meta)
+        return DeviceCatalog({k: v[item] for k, v in self.columns.items()}, self.meta, self.units)
 
     def with_regions(self, labels):
         labels = _to_device(labels)
         if labels.shape != (len(self),):
             raise ValueError('Region labels must have one entry per lens.')
-        return DeviceCatalog(dict(self.columns, field_jk=labels), self.meta)
+        return DeviceCatalog(dict(self.columns, field_jk=labels), self.meta, self.units)
 
     @classmethod
     def from_table(cls, table):
         if isinstance(table, cls):
             return table
         return cls({k: _to_device(table[k]) for k in table.colnames
-                    if k.startswith('sum ') or k in ('w_sys', 'field_jk')}, table.meta)
+                    if k.startswith('sum ') or k in ('w_sys', 'field_jk')}, table.meta,
+                   {k: table[k].unit for k in table.colnames if getattr(table[k], 'unit', None)})
 
     def to_table(self):
         from astropy.table import Table
         cp = cupy()
-        return Table({k: cp.asnumpy(v) for k, v in self.columns.items()},
-                     meta=deepcopy(self.meta))
+        table = Table({k: cp.asnumpy(v) for k, v in self.columns.items()},
+                      meta=deepcopy(self.meta))
+        for key, unit in self.units.items():
+            if key in table.colnames:
+                table[key].unit = unit
+        return table
 
 
 class GPUSession:
@@ -346,7 +352,7 @@ def stack_sums(lens, random=None, shear=False, component='t', **options):
     """Broadcast stacking over bins and an optional leading sample dimension."""
     if component not in ('t', 'x'):
         raise ValueError("component must be 't' or 'x'.")
-    signal = 'et' if shear else 'ds'
+    signal = 'gt' if shear else 'ds'
     numerator = 'sum w_ls e_' + component + ('' if shear else ' sigma_crit')
     w = lens['sum w_ls']
     raw = lens[numerator] / w
@@ -393,12 +399,20 @@ def stack(table_l, table_r=None, shear=False, return_table=False,
         bins = table_l.meta['bins']
         table = Table({'rp_min': bins[:-1], 'rp_max': bins[1:]})
         table['n_pairs'] = cp.asnumpy(result.pop('n_pairs'))
-        table['rp'] = np.sqrt(bins[:-1]*bins[1:])
         for k, v in result.items():
             table[k] = cp.asnumpy(v)
+        if not shear:
+            unit = _density_unit(table_l)
+            for key in ('ds', 'ds_raw', 'ds_r'):
+                if key in table.colnames and unit is not None:
+                    table[key].unit = unit
         return table
-    value = result['et' if shear else 'ds']
-    return value if return_device else cp.asnumpy(value)
+    value = result['gt' if shear else 'ds']
+    if return_device:
+        return value
+    value = cp.asnumpy(value)
+    unit = _density_unit(table_l) if not shear else None
+    return value if unit is None else value * unit
 
 
 def jackknife(f, table_l, table_r=None, table_l_2=None, table_r_2=None,
@@ -441,12 +455,12 @@ def jackknife(f, table_l, table_r=None, table_l_2=None, table_r_2=None,
         rsums = None if random is None else aggregate(random, labels)
         values = stack_sums(sums, rsums, shear=shear,
                             component=component, **options)
-        value = values['et' if shear else 'ds']
+        value = values['gt' if shear else 'ds']
         if difference:
             second = stack_sums(aggregate(lens2, labels),
                                 None if random2 is None else aggregate(random2, labels),
                                 shear=shear, component=component, **options)
-            value = value - second['et' if shear else 'ds']
+            value = value - second['gt' if shear else 'ds']
         blocks.append(value)
     samples = cp.concatenate(blocks, axis=0)
     cov = _covariance(samples)
@@ -454,6 +468,12 @@ def jackknife(f, table_l, table_r=None, table_l_2=None, table_r_2=None,
         cov = cov[0, 0]  # Match numpy.cov's historical one-output shape.
     if not return_device:
         cov, samples = cp.asnumpy(cov), cp.asnumpy(samples)
+        unit = _density_unit(table_l) if not shear else None
+        if unit is not None:
+            cov = cov * unit**2
+            samples = [row * unit for row in samples]
+        else:
+            samples = list(samples)
     return (cov, samples) if return_samples else cov
 
 
@@ -461,3 +481,9 @@ def jackknife(f, table_l, table_r=None, table_l_2=None, table_r_2=None,
 def _covariance(samples):
     centered = samples - samples.mean(axis=0)
     return ((len(samples)-1)/len(samples)) * (centered.T @ centered)
+
+
+def _density_unit(catalog):
+    if isinstance(catalog, DeviceCatalog):
+        return catalog.units.get('sum w_ls e_t sigma_crit')
+    return getattr(catalog['sum w_ls e_t sigma_crit'], 'unit', None)

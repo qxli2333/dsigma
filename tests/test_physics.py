@@ -1,18 +1,130 @@
 import numpy as np
+import pytest
+from astropy import units as u
 from astropy.cosmology import FlatLambdaCDM
+from astropy.cosmology import units as cu
+from scipy.interpolate import make_interp_spline
 
-from dsigma.physics import critical_surface_density
+from dsigma import default_cosmology, physics
 
 
 def test_critical_surface_density():
+    # Perform some plausibility checks for the critical surface density.
 
-    cosmology = FlatLambdaCDM(100, 0.3)
     z_l = 0.3
     z_s = 0.5
 
-    sigma_crit_com = critical_surface_density(z_l, z_s, cosmology)
-    sigma_crit_phy = critical_surface_density(z_l, z_s, cosmology,
-                                              comoving=False)
+    # result should have correct units
+    sigma_crit = physics.critical_surface_density(z_l, z_s)
+    assert isinstance(sigma_crit, u.Quantity)
+    sigma_crit.to(cu.littleh * u.Msun / u.pc**2)
+
+    # comoving should be included correctly
+    sigma_crit_com = physics.critical_surface_density(z_l, z_s)
+    sigma_crit_phy = physics.critical_surface_density(z_l, z_s, comoving=False)
 
     assert np.isclose(sigma_crit_com * (1 + z_l)**2,
                       sigma_crit_phy, rtol=0, atol=1e-12)
+
+    # critical surface density is infinite if lens behind source
+    z_l = 0.8
+    z_s = 0.5
+    sigma_crit = physics.critical_surface_density(z_l, z_s)
+    assert sigma_crit == np.inf
+
+
+@pytest.mark.parametrize('m_nu', [[0, 0, 0], [0, 0, 0.001], [0, 0, 0.6],
+                                  [0, 0.6, 1.2]])
+def test_to_camb(m_nu):
+    # Test that we can convert to CAMB correctly.
+
+    cosmology_astropy = default_cosmology.clone(m_nu=m_nu, Tcmb0=3.0)
+    cosmology_camb = physics._to_camb(cosmology_astropy, [1, 0.5, 0])
+
+    assert np.isclose(cosmology_camb.get_sigma8_0(),
+                      cosmology_astropy.meta['sigma8'], rtol=1e-6, atol=0)
+
+    z = np.linspace(0, 5, 20)
+
+    assert np.allclose(
+        cosmology_astropy.angular_diameter_distance(z).to(u.Mpc).value,
+        cosmology_camb.angular_diameter_distance(z), rtol=1e-6, atol=0)
+
+    assert np.allclose(
+        cosmology_camb.get_Omega('photon', z),
+        cosmology_astropy.Ogamma(z), rtol=1e-5, atol=0)
+
+    assert np.allclose(
+        cosmology_camb.get_Omega('baryon', z) +
+        cosmology_camb.get_Omega('cdm', z),
+        cosmology_astropy.Om(z), rtol=1e-5, atol=0)
+
+    assert np.allclose(
+        cosmology_camb.get_Omega('neutrino', z) +
+        cosmology_camb.get_Omega('nu', z),
+        cosmology_astropy.Onu(z), rtol=2e-3, atol=0)
+
+
+def test_gaussian_quadrature_2d():
+    # Test 2d Gaussian quadrature on an analytic example.
+
+    def f(x, y):
+        return x**2 + np.sin(y)
+
+    x_min = -2.5
+    x_max = +2.4
+    y_min = -1.2
+    y_max = 1.3
+
+    assert np.isclose(
+        physics._gaussian_quadrature_2d(f, 10, x_min, x_max, 10, y_min, y_max),
+        (x_max**3 - x_min**3) / 3.0 * (y_max - y_min) +
+        (x_max - x_min) * (np.cos(y_min) - np.cos(y_max)))
+
+
+def test_lens_magnification():
+    # Compare the results from dsigma to those shown in Unruh et al. (2020).
+
+    z_l = 0.41
+    z_s = 0.99
+
+    # Millennium simulation cosmology
+    cosmology = FlatLambdaCDM(
+        Ob0=0.045, Om0=0.25, H0=73, Tcmb0=2.7255, meta=dict(sigma8=0.9, n=1.0))
+
+    theta = np.geomspace(0.5, 20, 30) * u.arcmin
+
+    alpha_l = 2.71
+    gt = physics.lens_magnification_shear_bias(
+        theta, alpha_l, z_l, z_s, cosmology=cosmology)
+
+    # digitized from Unruh et al. (2020)
+    gt_unruh = 1e-5 * make_interp_spline(
+        [0.556, 0.834, 1.26, 1.95, 2.95, 4.51, 6.86, 10.5, 15.9, 19.0],
+        [4.49, 4.80, 4.99, 5.00, 4.74, 4.19, 3.41, 2.56, 1.78, 1.52])(theta)
+
+    assert np.allclose(gt, gt_unruh, rtol=0.1, atol=0)
+
+
+def test_sigma_crit_little_h():
+
+    cosmo70 = FlatLambdaCDM(Om0=0.3, H0=70)
+    cosmo100 = FlatLambdaCDM(Om0=0.3, H0=100)
+    z_l = 0.3
+    z_s = 0.5
+
+    sigma_crit_1 = physics.critical_surface_density(
+        z_l, z_s, cosmology=cosmo70)
+    sigma_crit_2 = physics.critical_surface_density(
+        z_l, z_s, cosmology=cosmo100)
+    z_s = np.linspace(z_s, z_s, 10)
+    n_s = np.ones(len(z_s))
+    sigma_crit_3 = physics.effective_critical_surface_density(
+        z_l, z_s, n_s, cosmology=cosmo70)
+    sigma_crit_4 = physics.effective_critical_surface_density(
+        z_l, z_s, n_s, cosmology=cosmo70)
+    print(sigma_crit_1)
+
+    assert np.isclose(sigma_crit_1.value, sigma_crit_2.value)
+    assert np.isclose(sigma_crit_1.value, sigma_crit_3.value)
+    assert np.isclose(sigma_crit_1.value, sigma_crit_4.value)

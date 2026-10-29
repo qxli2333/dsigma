@@ -1,5 +1,7 @@
 #!/usr/bin/env python
-"""Production CPU baseline on a Slurm CPU node (no CUDA dependency)."""
+"""Historical benchmark: run at the frozen commit in docs/gpu_validation.md.
+
+Production CPU baseline on a Slurm CPU node (no CUDA dependency)."""
 import argparse
 import hashlib
 import json

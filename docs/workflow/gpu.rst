@@ -85,7 +85,7 @@ RA-wrap geometry, missing random regions, two catalog pairs and NaN/Inf values.
 GPU tests skip when CuPy or a CUDA device is unavailable.
 
 ``examples/gpu_single_device.py`` is a standalone synthetic demonstration.
-``examples/gpu_validation.py`` is a Perlmutter acceptance runner using existing
+The frozen pre-1.2.3 ``examples/gpu_validation.py`` is a Perlmutter acceptance runner using existing
 calibrated type1 inputs and read-only survey adapters. Its default output root
 is ``/pscratch/sd/q/qinxunli/dsigma_gpu_validation/acceptance``. Run the full
 UNIONS source catalog without ``--source-limit``; use that flag for deterministic
@@ -93,7 +93,7 @@ DES/DECADE regressions. The runner fixes seed 42, radial bins, mass bins,
 corrections and shared jackknife labels, checks every sample before covariance,
 and writes version/timing manifests and scientific artifacts to scratch.
 
-For example::
+To reproduce the original report, use its recorded checkout and run::
 
     OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python examples/gpu_validation.py \
       --cpu-jobs 4 --output /pscratch/sd/q/qinxunli/dsigma_gpu_validation/unions_full
@@ -108,3 +108,20 @@ Measured acceptance results are recorded in ``docs/gpu_validation.md`` with a
 machine-readable manifest in ``docs/gpu_validation_summary.json``. In the initial
 complete UNIONS run, GPU was faster than one CPU process but did not outperform
 the 256-process production CPU pipeline end to end.
+
+Upstream compatibility
+----------------------
+
+Both backends use the upstream default cosmology and units: bare radial bins
+mean Mpc/h, density profiles carry little-h solar-mass/pc² units, and shear
+output columns are named ``gt`` and ``gt_raw``. Device arrays contain numerical
+values in the catalog's units; ``DeviceCatalog.to_table()`` restores column
+units. Host density profiles, jackknife samples and covariance carry units.
+Set redshift selection through source ``z_l_max``; the explicit
+``lens_source_cut`` keyword remains a compatibility override for older GPU
+examples. Omitting it follows the upstream source-column defaults.
+
+CPU jackknife now compresses input catalogs by default. GPU always performs its
+own region aggregation. To compare NaN/Inf or non-positive-weight edge cases
+against direct CPU weighted sums, pass ``compress=False`` to CPU jackknife;
+upstream compression can change those exceptional-value semantics.

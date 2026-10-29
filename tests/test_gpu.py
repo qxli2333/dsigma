@@ -41,6 +41,11 @@ def catalogs():
 
 
 def close(a, b, rtol=1e-8, atol=1e-10):
+    if isinstance(a, (list, tuple)) and len(a) and isinstance(a[0], u.Quantity):
+        a = u.Quantity(a).value
+    if isinstance(b, (list, tuple)) and len(b) and isinstance(b[0], u.Quantity):
+        b = u.Quantity(b).value
+    a, b = np.asarray(a), np.asarray(b)
     np.testing.assert_allclose(a, b, rtol=rtol, atol=atol, equal_nan=True)
     np.testing.assert_array_equal(np.isnan(a), np.isnan(b))
     np.testing.assert_array_equal(np.isposinf(a), np.isposinf(b))
@@ -129,7 +134,7 @@ def test_stack_jackknife(cp, stat):
                     boost_correction=boost, random_subtraction=random)
         if stat is stacking.excess_surface_density: opts['photo_z_dilution_correction'] = photo
         close(stat(l, table_r=r, **opts), stat(l, table_r=r, backend='gpu', **opts))
-        cov, samples = jackknife_resampling(stat, l, table_r=r, return_samples=True, **opts)
+        cov, samples = jackknife_resampling(stat, l, table_r=r, return_samples=True, compress=False, **opts)
         gcov, gsamples = jackknife_resampling(stat, l, table_r=r, backend='gpu', return_samples=True, batch_size=2, **opts)
         close(samples, gsamples); close(cov, gcov)
     table = stat(l, table_r=r, backend='gpu', return_table=True, **opts)
@@ -143,8 +148,8 @@ def test_nonfinite(cp, value):
     l, s = catalogs()
     l = precompute(l, s, [0., .1, 1., 5.]*u.deg, nside=8)
     l['sum w_ls e_t'][1, 1] = value
-    cov, samples = jackknife_resampling(stacking.tangential_shear, l, return_samples=True)
-    gcov, gsamples = jackknife_resampling(stacking.tangential_shear, l, backend='gpu', return_samples=True)
+    cov, samples = jackknife_resampling(stacking.tangential_shear, l, return_samples=True, compress=False)
+    gcov, gsamples = jackknife_resampling(stacking.tangential_shear, l, backend='gpu', return_samples=True, compress=False)
     close(samples, gsamples); close(cov, gcov)
 
 
@@ -160,7 +165,7 @@ def test_second_catalog_pair(cp):
     r = l[[0, 1, 4]].copy()
     for f in (stacking.tangential_shear_difference, stacking.excess_surface_density_difference):
         opts = dict(table_l_2=l2, table_r=r, table_r_2=r,
-                    random_subtraction=True, boost_correction=True, return_samples=True)
+                    random_subtraction=True, boost_correction=True, return_samples=True, compress=False)
         c, x = jackknife_resampling(f, l, **opts)
         gc, gx = jackknife_resampling(f, l, backend='gpu', **opts)
         close(x, gx); close(c, gc)
@@ -187,15 +192,14 @@ def test_streaming_and_edges(cp):
 def test_independent_pair_statistics(cp):
     """Astropy great-circle bearings, independent brute-force weighted sums."""
     from astropy.coordinates import SkyCoord
-    from astropy.cosmology import FlatLambdaCDM
-    from scipy.interpolate import interp1d
+    from dsigma import default_cosmology
+    from dsigma.helpers import interpolate_over_redshift
     from dsigma.physics import critical_surface_density
     l, s = catalogs()
     bins = np.array([0., .1, .3, 1., 4., 10.])*u.deg
-    cosmology = FlatLambdaCDM(H0=100, Om0=.3)
+    cosmology = default_cosmology
     def distances(z):
-        grid = np.linspace(min(z), max(z), max(10, int((max(z)-min(z))/.0001)))
-        return interp1d(grid, cosmology.comoving_transverse_distance(grid).value)(z)
+        return interpolate_over_redshift(cosmology.comoving_transverse_distance, z)
     dl, ds = distances(l['z']), distances(s['z'])
     gpu = precompute(l.copy(), s, bins, backend='gpu', nside=8)
     cpu = precompute(l.copy(), s, bins, nside=8)
@@ -206,7 +210,7 @@ def test_independent_pair_statistics(cp):
         pa = sc.position_angle(lc).rad
         co, si = np.cos(2*pa), np.sin(2*pa)
         et = s['e_1']*co+s['e_2']*si
-        sigma = critical_surface_density(lens['z'], s['z'], d_l=dl[i], d_s=ds, comoving=True)
+        sigma = critical_surface_density(lens['z'], s['z'], d_l=dl[i], d_s=ds, comoving=True).value
         weight = np.asarray(s['w'])/sigma**2
         valid = (np.asarray(s['z']) >= lens['z']) & (weight != 0)
         values = {'sum w_ls': weight, 'sum w_ls e_t': weight*et,
@@ -238,8 +242,8 @@ def test_large_region_set_single_bin(cp, weight_value):
     l['sum w_ls z_l'] = np.asarray(l['sum w_ls'])*.2
     l['sum w_ls z_s'] = np.asarray(l['sum w_ls'])*.7
     l.meta['bins'] = np.array([.1, 1.])*u.Mpc
-    c, x = jackknife_resampling(stacking.tangential_shear, l, return_samples=True)
-    gc, gx = jackknife_resampling(stacking.tangential_shear, l, backend='gpu', return_samples=True, return_device=True)
+    c, x = jackknife_resampling(stacking.tangential_shear, l, return_samples=True, compress=False)
+    gc, gx = jackknife_resampling(stacking.tangential_shear, l, backend='gpu', return_samples=True, return_device=True, compress=False)
     close(x, cp.asnumpy(gx)); close(c, cp.asnumpy(gc))
     original = stacking.tangential_shear(l, return_table=True)
     gpu = stacking.tangential_shear(l, return_table=True, backend='gpu')
@@ -254,12 +258,12 @@ def test_retained_empty_bin_and_custom_cpu(cp):
     # Only the removed region contributes to the first bin.
     for key in l.colnames:
         if key.startswith('sum '): l[key][l['field_jk'] != 2, 0] = 0
-    c, x = jackknife_resampling(stacking.tangential_shear, l, return_samples=True)
-    gc, gx = jackknife_resampling(stacking.tangential_shear, l, backend='gpu', return_samples=True)
+    c, x = jackknife_resampling(stacking.tangential_shear, l, return_samples=True, compress=False)
+    gc, gx = jackknife_resampling(stacking.tangential_shear, l, backend='gpu', return_samples=True, compress=False)
     close(x, gx); close(c, gc)
     def custom(table, table_l_2=None):
         return stacking.tangential_shear(table)-stacking.tangential_shear(table_l_2)
-    result = jackknife_resampling(custom, l, table_l_2=l)
+    result = jackknife_resampling(custom, l, table_l_2=l, compress=False)
     close(result, np.array([[np.nan, np.nan], [np.nan, 0.]]))
     with pytest.raises(ValueError, match='custom'):
         jackknife_resampling(custom, l, table_l_2=l, backend='gpu')
@@ -272,10 +276,61 @@ def test_fits_endianness_and_session_binding(cp):
         if key.startswith('sum ') or key in ('w_sys', 'field_jk'):
             l[key] = np.asarray(l[key]).astype(l[key].dtype.newbyteorder('>'))
     close(stacking.tangential_shear(l), stacking.tangential_shear(l, backend='gpu'))
-    a, x = jackknife_resampling(stacking.tangential_shear, l, return_samples=True)
-    b, y = jackknife_resampling(stacking.tangential_shear, l, backend='gpu', return_samples=True)
+    a, x = jackknife_resampling(stacking.tangential_shear, l, return_samples=True, compress=False)
+    b, y = jackknife_resampling(stacking.tangential_shear, l, backend='gpu', return_samples=True, compress=False)
     close(a, b); close(x, y)
     with GPUSession() as session:
         precompute(l.copy(), s, [.1, 1., 5.]*u.deg, nside=8, backend='gpu', session=session)
         with pytest.raises(ValueError, match='bound'):
             precompute(l.copy(), s.copy(), [.1, 1., 5.]*u.deg, nside=8, backend='gpu', session=session)
+
+
+@pytest.mark.parametrize('tomographic', [False, True])
+def test_upstream_units_and_source_cut(cp, tomographic):
+    """Upstream 1.2 units, radians, column cuts and n(z) without source z."""
+    l, s = catalogs()
+    l['ra'] = np.deg2rad(l['ra']) * u.rad
+    l['dec'] = np.deg2rad(l['dec']) * u.rad
+    s['ra'] = s['ra'] * u.deg
+    s['dec'] = s['dec'] * u.deg
+    s['z_l_max'] = np.asarray(s['z']) - .1
+    options = dict(nside=8)
+    if tomographic:
+        s['z_bin'] = np.arange(len(s)) % 2
+        s.remove_column('z')
+        z = np.linspace(.01, 2, 101)
+        options['table_n'] = Table(dict(z=z, n=np.stack([
+            np.exp(-((z-.6)/.2)**2), np.exp(-((z-.9)/.3)**2)], axis=1)))
+    bins = np.array([0., .03, .1, 1., 600.]) * u.arcmin
+    cpu = precompute(l.copy(), s, bins, **options)
+    device = precompute(l.copy(), s, bins, backend='gpu', return_device=True, **options)
+    host = device.to_table()
+    for key in cpu.colnames:
+        if key.startswith('sum '):
+            close(cpu[key], host[key])
+            assert cpu[key].unit == host[key].unit
+    a = stacking.excess_surface_density(cpu)
+    b = stacking.excess_surface_density(device, backend='gpu')
+    assert a.unit == b.unit
+    close(a, b)
+    c, x = jackknife_resampling(stacking.excess_surface_density, cpu, return_samples=True)
+    gc, gx = jackknife_resampling(stacking.excess_surface_density, device,
+                                  backend='gpu', return_samples=True)
+    assert c.unit == gc.unit
+    assert x[0].unit == gx[0].unit
+    close(c, gc)
+    close(x, gx)
+
+
+def test_upstream_pairs_below_pixel_size(cp):
+    from astropy.coordinates import SkyCoord
+    l = Table(dict(ra=[10., 18.], dec=[-8., 8.], z=[.2, .2], w_sys=[1., 1.]))
+    position = SkyCoord(l['ra']*u.deg, l['dec']*u.deg).directional_offset_by(
+        0*u.deg, 30*u.arcsec)
+    s = Table(dict(ra=position.ra, dec=position.dec, z=[.8, .8],
+                   w=[1., 1.], e_1=[0., 0.], e_2=[0., 0.]))
+    bins = [15, 60]*u.arcsec
+    cpu = precompute(l.copy(), s, bins)
+    gpu = precompute(l.copy(), s, bins, backend='gpu')
+    np.testing.assert_array_equal(cpu['sum 1'], [[1], [1]])
+    np.testing.assert_array_equal(gpu['sum 1'], cpu['sum 1'])

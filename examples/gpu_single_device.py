@@ -20,5 +20,5 @@ with GPUSession() as session:
     print(excess_surface_density(device, backend='gpu'))
     covariance, samples = jackknife_resampling(
         excess_surface_density, device, backend='gpu', return_samples=True)
-    print('jackknife samples:', samples.shape, 'covariance:', covariance.shape)
+    print('jackknife samples:', (len(samples), len(samples[0])), 'covariance:', covariance.shape)
     print('cross:', excess_surface_density(device, backend='gpu', component='x'))

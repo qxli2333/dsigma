@@ -1,29 +1,29 @@
 """Module containing jackknife resampling functions."""
 
-import warnings
-import numpy as np
+from copy import deepcopy
+
 import astropy.units as u
-from sklearn.cluster import DBSCAN, MiniBatchKMeans
-from scipy.spatial import cKDTree
+import numpy as np
 from astropy.table import Table
 from scipy.ndimage import gaussian_filter
+from scipy.spatial import cKDTree
+from sklearn.cluster import DBSCAN, MiniBatchKMeans
 
-from .helpers import spherical_to_cartesian
+from .helpers import in_degrees, spherical_to_cartesian
 
-
-__all__ = ["compute_jackknife_fields", "compress_jackknife_fields",
-           "smooth_correlation_matrix", "jackknife_resampling"]
+__all__ = ['compress_jackknife_fields', 'compute_jackknife_fields',
+           'jackknife_resampling', 'smooth_covariance_matrix']
 
 
 def compute_jackknife_fields(table, centers, distance_threshold=1,
-                             weights=None):
+                             weights=None, seed=None):
     """Compute the centers for jackknife regions using DBSCAN and KMeans.
 
-    The function first runs DBSCAN to identify continous fields of points.
+    The function first runs DBSCAN to identify continuous fields of points.
     Afterwards, KMeans clustering is run. The initial cluster centers are
-    random points from each continous field. The number of initial cluster
+    random points from each continuous field. The number of initial cluster
     centers per field is determined according to the total weight of each
-    continous field. The centers are defined in cartesian coordinates on a unit
+    continuous field. The centers are defined in cartesian coordinates on a unit
     sphere.
 
     Parameters
@@ -33,15 +33,18 @@ def compute_jackknife_fields(table, centers, distance_threshold=1,
         field IDs. The jackknife field for each galaxy will be added in the
         `field_jk` column.
     centers : int or numpy.ndarray
-        If int, total number of jackknife fields. Otherwise, the centers
+        If a number, total number of jackknife fields. Otherwise, the centers
         returned from a previous call to that function. This allows for
         different samples to have the same jackknife fields.
     distance_threshold : float, optional
         The angular separation in degrees used to link points and calculate
-        continous fields before running KMeans. Default is 1.
-    weights : None or numpy.ndarray
-        Per-lens weights for clustering. If None, assume the same weight for
-        all points. Default is None.
+        continuous fields before running KMeans. Default is 1.
+    weights : numpy.ndarray or None, optional
+        Per-lens weights for clustering. If ``None``, assume the same weight
+        for all points. Default is ``None``.
+    seed : int or None, optional
+        Random seed to initialize the random number generator. Default is
+        ``None``.
 
     Returns
     -------
@@ -49,10 +52,8 @@ def compute_jackknife_fields(table, centers, distance_threshold=1,
         The coordinates of the centers of the jackknife regions.
 
     """
-    x, y, z = spherical_to_cartesian(table['ra'].data, table['dec'].data)
-    xyz = np.column_stack((x, y, z))
     xyz = np.column_stack(spherical_to_cartesian(
-        table['ra'].data, table['dec'].data))
+        in_degrees(table['ra'].quantity), in_degrees(table['dec'].quantity)))
 
     if isinstance(centers, np.ndarray):
         kdtree = cKDTree(centers)
@@ -73,10 +74,10 @@ def compute_jackknife_fields(table, centers, distance_threshold=1,
 
     w_c = np.bincount(c[c != -1], weights=weights[c != -1])
     if n_jk < len(w_c):
-        raise RuntimeError(
-            "The number of jackknife regions cannot be smaller than the " +
-            "number of continous fields. Try increasing `distance_threshold`" +
-            " or decreasing `centers`.")
+        msg = ("The number of jackknife regions cannot be smaller than the "
+               "number of continuous fields. Try increasing "
+               "`distance_threshold` or decreasing `centers`.")
+        raise RuntimeError(msg)
 
     # Assign the number of jackknife fields according to the total number of
     # objects in each field.
@@ -89,15 +90,19 @@ def compute_jackknife_fields(table, centers, distance_threshold=1,
         n_jk_per_c[np.argmin(n_jk_per_c)] += 1
         n_jk_per_c[np.argmax(n_jk_per_c)] -= 1
 
+    rng = np.random.default_rng(seed)
+
     init = np.zeros((0, 3))
     for i in range(len(w_c)):
         mask = i != c
         if w_c[i] > 0:
-            init = np.vstack([init, xyz[~mask][np.random.choice(
+            init = np.vstack([init, xyz[~mask][rng.choice(
                 np.sum(~mask), n_jk_per_c[i], replace=False,
                 p=weights[~mask] / w_c[i])]])
 
-    centers = MiniBatchKMeans(n_clusters=n_jk, init=init, n_init=1).fit(
+    kmeans = MiniBatchKMeans(n_clusters=n_jk, init=init, n_init=1,
+                             random_state=int(rng.integers(2**31)))
+    centers = kmeans.fit(
         xyz[weights > 0], sample_weight=weights[weights > 0]).cluster_centers_
     compute_jackknife_fields(table, centers)
 
@@ -125,111 +130,130 @@ def compress_jackknife_fields(table):
         exactly as many rows as there are jackknife fields.
 
     """
-    all_field_jk = np.unique(table['field_jk'])
-    table_jk = Table(table[:len(all_field_jk)], copy=True)
+    table = table.copy()
+    table.sort('field_jk')
+    table_jk = Table()
+    table_jk.meta = deepcopy(table.meta)
 
-    for i, field_jk in enumerate(all_field_jk):
-        mask = table['field_jk'] == field_jk
-        for key in table.colnames:
-            if key == 'field_jk':
-                table_jk[i][key] = table[key][mask][0]
-            elif key in ['w_sys', 'sum 1']:
-                table_jk[i][key] = np.sum(table[key][mask], axis=0)
-            else:
-                with warnings.catch_warnings():
-                    if np.any(np.isnan(table[key][mask])):
-                        warnings.simplefilter(
-                            'ignore', category=RuntimeWarning)
-                    table_jk[i][key] = np.average(
-                        table[key][mask], weights=table['w_sys'][mask], axis=0)
+    table_jk['field_jk'], counts = np.unique(
+        table['field_jk'], return_counts=True)
+
+    for key in table.colnames:
+
+        if not (key in ['w_sys', 'ra', 'dec', 'z'] or key[:3] == 'sum'):
+            continue
+
+        table_jk[key] = np.zeros(
+            (len(table_jk), ) + table[key].shape[1:], dtype=table[key].dtype)
+
+        if table[key].unit is not None:
+            table_jk[key] = table_jk[key] * table[key].unit
+
+        for i in range(len(table_jk)):
+            k_min = 0 if i == 0 else np.cumsum(counts)[i - 1]
+            k_max = np.cumsum(counts)[i]
+            if key == 'w_sys':
+                table_jk[key][i] = np.sum(table[key][k_min:k_max])
+            elif key == 'sum 1':
+                table_jk[key][i] = np.sum(table[key][k_min:k_max], axis=0)
+            elif np.sum(table['w_sys'][k_min:k_max]) > 0:
+                table_jk[key][i] = np.average(
+                    table[key][k_min:k_max],
+                    weights=table['w_sys'][k_min:k_max], axis=0)
 
     return table_jk
 
 
-def smooth_correlation_matrix(cor, sigma, exclude_diagonal=True):
-    """Apply a simple gaussian filter on a correlation matrix.
+def smooth_covariance_matrix(cov, sigma):
+    """Smooth a covariance matrix.
+
+    This function first calculates the correlation matrix, then applies a
+    Gaussian filter on the correlation matrix, and finally reconstructs the
+    covariance matrix using the original diagonal and smoothed correlation
+    matrix.
 
     Parameters
     ----------
-    cor : numpy.ndarray
-        Correlation matrix.
-    sigma : int
-        Scale of the gaussian filter.
-    exclude_diagonal : bool, optional
-        Whether to exclude the diagonal from the smoothing. That is what should
-        be done generally because the diagonal is 1 by definition. Default is
-        True.
+    cov : numpy.ndarray or astropy.units.quantity.Quantity
+        Covariance matrix.
+    sigma : float
+        Scale of the Gaussian filter.
 
     Returns
     -------
-    cor_new : numpy.ndarray
-        Smoothed correlation matrix.
+    cov_smooth : numpy.ndarray or astropy.units.quantity.Quantity
+        Smoothed covariance matrix.
 
     """
-    n_dim = len(np.diag(cor))
-    cor_new = np.copy(cor)
+    n_dim = len(np.diag(cov))
+    diag_cov = np.diag(cov)
+    cor = cov / np.outer(np.sqrt(diag_cov), np.sqrt(diag_cov))
 
-    if exclude_diagonal:
-        cor_new[0, 0] = 0.5 * (cor[0, 1] + cor[1, 0])
-        cor_new[n_dim - 1, n_dim - 1] = 0.5 * (cor[n_dim - 1, n_dim - 2] +
-                                               cor[n_dim - 2, n_dim - 1])
+    # Set diagonal elements to 0 before filtering.
+    cor = gaussian_filter(cor - np.eye(n_dim), sigma)
+    # Diagonal elements were 0 but may not be 0 now. Undo that by return the
+    # values to the off-diagonal elements.
+    while not np.allclose(np.diag(cor), 0, rtol=0, atol=1e-12):
+        cor += (gaussian_filter(np.diag(np.diag(cor)), sigma) -
+                                np.diag(np.diag(cor)))
 
-        for i in range(1, n_dim - 1):
-            cor_new[i, i] = 0.25 * (cor[i, i - 1] + cor[i, i + 1] +
-                                    cor[i - 1, i] + cor[i + 1, i])
+    for i in range(n_dim):
+        cor[i, i] = 1
 
-    cor_new = gaussian_filter(cor_new, sigma, mode='nearest')
-
-    if exclude_diagonal:
-        for i in range(n_dim):
-            cor_new[i, i] = cor[i, i]
-
-    return cor_new
+    return cor * np.outer(np.sqrt(diag_cov), np.sqrt(diag_cov))
 
 
 def jackknife_resampling(f, table_l, table_r=None, table_l_2=None,
-                         table_r_2=None, backend='cpu', return_device=False,
-                         return_samples=False, batch_size=64, **kwargs):
+                         table_r_2=None, compress=True, return_samples=False,
+                         backend='cpu', return_device=False, batch_size=64, **kwargs):
     """Compute the covariance of a function from jackknife re-sampling.
 
     Parameters
     ----------
-    f : function
+    f : callable
         Function that returns a result for which we want to have uncertainties.
         The function must take exactly one positional argument, the lens table.
         Additionally, it can have several additional keyword arguments.
     table_l : astropy.table.Table
         Precompute results for the lenses. The catalog must have jackknife
         regions assigned to it.
-    table_r : optional, astropy.table.Table, optional
+    table_r : astropy.table.Table or None, optional
         Precompute results for random lenses. The input function must accept
-        the random lens table via the `table_r` keyword argument. Default
-        is None.
-    table_l_2 : optional, astropy.table.Table
+        the random lens table via the ``table_r`` keyword argument. Default
+        is ``None``.
+    table_l_2 : astropy.table.Table or None, optional
         Precompute results for a second set of lenses.The input function must
-        accept the second lens table via the `table_l_2` keyword argument.
-        Default is None.
-    table_r_2 : optional, astropy.table.Table, optional
+        accept the second lens table via the ``table_l_2`` keyword argument.
+        Default is ``None``.
+    table_r_2 : astropy.table.Table or None, optional
         Precompute results for a second set of random lenses. The input
-        function must accept the second random lens table via the `table_r_2`
-        keyword argument. Default is None.
-    backend : {'cpu', 'gpu'}, optional
-        GPU batches built-in statistics and profile differences over regions;
-        arbitrary Python callables require CPU.
-    return_device : bool, optional
-        Keep covariance and optional samples on the GPU.
+        function must accept the second random lens table via the ``table_r_2``
+        keyword argument. Default is ``None``.
+    compress : bool, optional
+        If ``True``, compress jackknife fields via
+        ``dsigma.jackknife.compress_jackknife_fields`` before performing the
+        jackknife calculation. This can substantially improve performance.
+        Default is ``True``.
     return_samples : bool, optional
-        Return (covariance, samples); samples follow sorted lens region labels.
+        If ``True``, return the list of samples used to compute the covariance
+        as a second return value.
+    backend : {'cpu', 'gpu'}, optional
+        GPU batches built-in statistics; custom callables use CPU.
+    return_device : bool, optional
+        Keep covariance and samples on the GPU, in catalog units.
     batch_size : int, optional
-        GPU sample batch size, default 64, minimum 2.
-    kwargs : dict, optional
+        GPU region batch size; default 64, minimum 2. GPU always aggregates
+        regions internally, independently of ``compress``.
+    **kwargs
         Additional keyword arguments to be passed to the function.
 
     Returns
     -------
-    cov : numpy.ndarray
+    cov : numpy.ndarray or astropy.units.quantity.Quantity
         Covariance matrix of the result derived from jackknife re-sampling.
-
+    samples : list[array]
+        Only returned if return_samples=True. The samples used to compute the
+        covariance.
     """
     from .gpu import check_backend
     check_backend(backend)
@@ -243,18 +267,30 @@ def jackknife_resampling(f, table_l, table_r=None, table_l_2=None,
 
     samples = []
 
+    if compress:
+        table_l = compress_jackknife_fields(table_l)
+        if table_r is not None:
+            table_r = compress_jackknife_fields(table_r)
+        if table_l_2 is not None:
+            table_l_2 = compress_jackknife_fields(table_l_2)
+        if table_r_2 is not None:
+            table_r_2 = compress_jackknife_fields(table_r_2)
+
     for field_jk in np.unique(table_l['field_jk']):
-
-        mask_l = table_l['field_jk'] != field_jk
-
         for name, table in zip(['table_r', 'table_l_2', 'table_r_2'],
                                [table_r, table_l_2, table_r_2]):
             if table is not None:
                 kwargs[name] = table[table['field_jk'] != field_jk]
 
-        samples.append(f(table_l[mask_l], **kwargs))
+        samples.append(f(table_l[table_l['field_jk'] != field_jk], **kwargs))
 
-    samples = np.array(samples)
-    covariance = ((len(np.unique(table_l['field_jk'])) - 1) *
-                  np.cov(samples, rowvar=False, ddof=0))
-    return (covariance, samples) if return_samples else covariance
+    cov = ((len(np.unique(table_l['field_jk'])) - 1) *
+            np.cov(np.array(samples), rowvar=False, ddof=0))
+
+    if isinstance(samples[0], u.Quantity):
+        cov = cov * samples[0].unit**2
+
+    if return_samples:
+        return cov, samples
+
+    return cov

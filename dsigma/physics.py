@@ -1,99 +1,54 @@
 """Physics functions for the dsigma pipeline."""
 
+from functools import partial
+
 import numpy as np
 from astropy import constants as c
 from astropy import units as u
-from scipy.special import jv, jn_zeros
 from astropy.cosmology import FlatLambdaCDM
+from astropy.cosmology import units as cu
+from scipy.special import jn_zeros, jv
+
+from . import default_cosmology
+
+__all__ = ['critical_surface_density', 'effective_critical_surface_density',
+           'lens_magnification_shear_bias', 'mpc_per_degree']
 
 
-__all__ = ['mpc_per_degree', 'projection_angle', 'critical_surface_density',
-           'effective_critical_surface_density',
-           'lens_magnification_shear_bias']
-
-_sigma_crit_factor = (c.c**2 / (4 * np.pi * c.G)).to(u.Msun / u.pc).value
-
-
-def mpc_per_degree(z, cosmology=FlatLambdaCDM(H0=100, Om0=0.3),
-                   comoving=False):
-    """Estimate the angular scale in Mpc/degree at certain redshift.
+def mpc_per_degree(z, cosmology=None, comoving=False):
+    """Calculate the conversion factor between angular and physical scales.
 
     Parameters
     ----------
-    cosmology : astropy.cosmology, optional
-        Cosmology to assume for calculations.
     z : float or numpy.ndarray
         Redshift of the object.
-    comoving : boolen
-        Use comoving distance instead of physical distance when True.
-        Default: False
+    cosmology : astropy.cosmology or None, optional
+        Cosmology to use for calculation. If ``None``, use
+        ``dsigma.default_cosmology``. Default is ``None``.
+    comoving : bool, optional
+        Use comoving distance instead of physical distance when ``True``.
+        Default is ``False``.
 
     Returns
     -------
-    float or numpy.ndarray
-        Physical scale in unit of Mpc/degree.
+    factor : astropy.units.quantity.Quantity
+        Conversion factor.
 
     """
+    cosmology = default_cosmology if cosmology is None else cosmology
+
     if comoving:
-        return (cosmology.comoving_transverse_distance(z).to(u.Mpc).value *
-                np.deg2rad(1))
-
-    return (cosmology.angular_diameter_distance(z).to(u.Mpc).value *
-            np.deg2rad(1))
-
-
-def projection_angle(ra_l, dec_l, ra_s, dec_s):
-    r"""Calculate projection angle between lens and sources.
-
-    Parameters
-    ----------
-    ra_l, dec_l : float or numpy.ndarray
-        Coordinates of the lens galaxies in degrees.
-    ra_s, dec_s : float or numpy.ndarray
-        Coordinates of the source galaxies in degrees.
-
-    Returns
-    -------
-    cos_2phi, sin_2phi : float or numpy.ndarray
-        The :math:`\cos` and :math:`\sin` of :math:`2 \phi`, where
-        :math:`\phi` is the angle measured from right ascension direction to a
-        line connecting the lens and source galaxies.
-
-    """
-    # Convert everything into radians.
-    ra_l, dec_l = np.deg2rad(ra_l), np.deg2rad(dec_l)
-    ra_s, dec_s = np.deg2rad(ra_s), np.deg2rad(dec_s)
-
-    # Calculate the tan(phi).
-    mask = np.cos(dec_s) * np.sin(ra_s - ra_l) != 0
-
-    if hasattr(mask, "__len__"):
-        tan_phi = (
-            (np.cos(dec_l) * np.sin(dec_s) - np.sin(dec_l) * np.cos(dec_s) *
-             np.cos(ra_s - ra_l))[mask] /
-            (np.cos(dec_s) * np.sin(ra_s - ra_l))[mask])
-
-        cos_2phi = np.repeat(-1.0, len(mask))
-        sin_2phi = np.repeat(0.0, len(mask))
-
-        cos_2phi[mask] = (2.0 / (1.0 + tan_phi * tan_phi)) - 1.0
-        sin_2phi[mask] = 2.0 * tan_phi / (1.0 + tan_phi * tan_phi)
-    elif mask:
-        tan_phi = (
-            (np.cos(dec_l) * np.sin(dec_s) - np.sin(dec_l) * np.cos(dec_s) *
-             np.cos(ra_s - ra_l)) / (np.cos(dec_s) * np.sin(ra_s - ra_l)))
-
-        cos_2phi = (2.0 / (1.0 + tan_phi * tan_phi)) - 1.0
-        sin_2phi = (2.0 * tan_phi / (1.0 + tan_phi * tan_phi))
+        d = cosmology.comoving_transverse_distance(z)
     else:
-        cos_2phi = -1
-        sin_2phi = 0
+        d = cosmology.angular_diameter_distance(z)
 
-    return cos_2phi, sin_2phi
+    d = d.to(u.Mpc / cu.littleh, cu.with_H0(cosmology.H0))
+
+    return (d / u.rad).to(u.Mpc / cu.littleh / u.deg)
 
 
-def critical_surface_density(z_l, z_s, cosmology=None, comoving=True, d_l=None,
-                             d_s=None):
+def critical_surface_density(
+        z_l, z_s, cosmology=None, comoving=True, d_l=None, d_s=None):
     """Compute the critical surface density.
 
     Parameters
@@ -102,46 +57,46 @@ def critical_surface_density(z_l, z_s, cosmology=None, comoving=True, d_l=None,
         Redshift of lens.
     z_s : float or numpy.ndarray
         Redshift of source.
-    cosmology : astropy.cosmology, optional
+    cosmology : astropy.cosmology or None, optional
         Cosmology to assume for calculations. Only used if comoving distances
-        are not passed.
+        are not passed. If ``None``, use ``dsigma.default_cosmology``. Default
+        is ``None``.
     comoving : bool, optional
-        Flag for using comoving instead of physical units.
-    d_l : float or numpy.ndarray
+        Flag for using comoving instead of physical units. Default is ``True``.
+    d_l : astropy.units.quantity.Quantity, optional
         Comoving transverse distance to the lens. If not given, it is
-        calculated from the redshift provided.
-    d_s : float or numpy.ndarray
+        calculated from the redshift provided. Default is ``None``.
+    d_s : astropy.units.quantity.Quantity, optional
         Comoving transverse distance to the source. If not given, it is
-        calculated from the redshift provided.
+        calculated from the redshift provided. Default is ``None``.
 
     Returns
     -------
-    sigma_crit : float or numpy.ndarray
+    sigma_crit : astropy.units.quantity.Quantity
         Critical surface density for each lens-source pair.
 
     """
+    cosmology = default_cosmology if cosmology is None else cosmology
+
     if d_l is None:
-        d_l = cosmology.comoving_transverse_distance(z_l).to(u.Mpc).value
+        d_l = cosmology.comoving_transverse_distance(z_l)
     if d_s is None:
-        d_s = cosmology.comoving_transverse_distance(z_s).to(u.Mpc).value
+        d_s = cosmology.comoving_transverse_distance(z_s)
 
-    dist_term = (1e-6 * (d_s / (1 + z_s)) / (d_l / (1 + z_l)) /
-                 (np.where(d_s > d_l, d_s - d_l, 1) / (1 + z_s)))
-
-    if np.isscalar(dist_term):
-        if d_s <= d_l:
-            dist_term = np.inf
-    else:
-        dist_term[d_s <= d_l] = np.inf
+    with np.errstate(divide='ignore'):
+        sigma_crit = c.c**2 / (4 * np.pi * c.G) * (
+            (d_s / (1 + z_s)) / (d_l / (1 + z_l)) / ((d_s - d_l) / (1 + z_s)))
+    sigma_crit = np.where(d_s <= d_l, np.inf * sigma_crit.unit, sigma_crit)
 
     if comoving:
-        dist_term /= (1.0 + z_l)**2
+        sigma_crit /= (1.0 + z_l)**2
 
-    return _sigma_crit_factor * dist_term
+    return sigma_crit.to(
+        cu.littleh * u.Msun / u.pc**2, cu.with_H0(cosmology.H0))
 
 
-def effective_critical_surface_density(z_l, z_s, n_s, cosmology,
-                                       comoving=True):
+def effective_critical_surface_density(
+        z_l, z_s, n_s, cosmology=None, comoving=True):
     """Compute the effective critical surface density.
 
     Parameters
@@ -153,71 +108,193 @@ def effective_critical_surface_density(z_l, z_s, n_s, cosmology,
     n_s : numpy.ndarray
         Fraction of source galaxies in each redshift bin. Does not need to be
         normalized.
-    cosmology : astropy.cosmology
-        Cosmology to assume for calculations.
-    comoving : boolean, optional
-        Flag for using comoving instead of physical unit.
+    cosmology : astropy.cosmology or None, optional
+        Cosmology to assume for calculations. If ``None``, use
+        ``dsigma.default_cosmology``. Default is ``None``.
+    comoving : bool, optional
+        Flag for using comoving instead of physical units. Default is ``True``.
 
     Returns
     -------
-    sigma_crit_eff : float or numpy.ndarray
+    sigma_crit_eff : astropy.units.quantity.Quantity
         Effective critical surface density for the lens redshift given the
-        source redshift distribution.
+        source redshift distribution. Has the same length as `z_l`.
 
     """
-    d_l = cosmology.comoving_transverse_distance(z_l).to(u.Mpc).value
-    d_s = cosmology.comoving_transverse_distance(z_s).to(u.Mpc).value
+    cosmology = default_cosmology if cosmology is None else cosmology
+    d_l = cosmology.comoving_transverse_distance(z_l)
+    d_s = cosmology.comoving_transverse_distance(z_s)
 
-    if not np.isscalar(z_l):
+    if hasattr(z_l, '__len__'):
         z_l = np.repeat(z_l, len(z_s)).reshape((len(z_l), len(z_s)))
         d_l = np.repeat(d_l, len(z_s)).reshape(z_l.shape)
         z_s = np.tile(z_s, len(z_l)).reshape(z_l.shape)
         d_s = np.tile(d_s, len(z_l)).reshape(z_l.shape)
         n_s = np.tile(n_s, len(z_l)).reshape(z_l.shape)
 
-    sigma_crit = critical_surface_density(z_l, z_s, cosmology=cosmology,
-                                          comoving=comoving, d_l=d_l, d_s=d_s)
+    sigma_crit_eff_inv = 1.0 / critical_surface_density(
+        z_l=z_l, d_l=d_l, z_s=z_s, d_s=d_s, cosmology=cosmology,
+        comoving=comoving)
+    sigma_crit_eff_inv = np.average(sigma_crit_eff_inv, weights=n_s, axis=-1)
 
-    if not np.isscalar(z_l):
-        sigma_crit_eff = np.repeat(np.inf, len(z_l))
-        mask = np.average(sigma_crit**-1, axis=-1, weights=n_s) == 0
-        sigma_crit_eff[~mask] = np.average(sigma_crit**-1, axis=-1,
-                                           weights=n_s)[~mask]**-1
-        return sigma_crit_eff
-    else:
-        if np.average(sigma_crit**-1, weights=n_s) > 0:
-            return np.average(sigma_crit**-1, weights=n_s)**-1
-        else:
-            return np.inf
+    with np.errstate(divide='ignore'):
+        return 1.0 / sigma_crit_eff_inv
 
 
-def lens_magnification_shear_bias(theta, alpha_l, z_l, z_s, camb_results,
-                                  n_z=10, n_ell=200, bessel_function_zeros=100,
-                                  k_max=1e3):
+def _to_camb(cosmology, z, k_max=1e3):
+    r"""Convert an astropy cosmology object into a CAMB result object.
+
+    Parameters
+    ----------
+    cosmology : astropy.cosmology.FlatLambdaCDM
+        Astropy cosmology. Note that :math:`\sigma_8` and :math:`n_s` need to
+        be defined in the cosmology's metadata.
+    z : numpy.ndarray
+        Redshifts for which to compute the power spectrum.
+    k_max : float, optional
+        The maximum wavenumber (in :math:`\mathrm{Mpc}^{-1}`) beyond which the
+        power spectrum is assumed to be 0. Default is 1000.
+
+    Returns
+    -------
+    results : camb.results.CAMBdata
+        CAMB results object that contains information about the matter power
+        spectrum.
+
+    Raises
+    ------
+    ValueError:
+        If the power spectrum parameters are not defined in ``cosmology.meta``.
+    TypeError
+        If ``cosmology`` is not an instance of
+        ``astropy.cosmology.FlatLambdaCDM``.
+    ImportError
+        If ``camb`` is not installed.
+
+    """
+    if not isinstance(cosmology, FlatLambdaCDM):
+        msg = "Cosmology must be instance of astropy.cosmology.FlatLambdaCDM."
+        raise TypeError(msg)
+
+    for key, desc in zip(
+            ['n', 'sigma8'],
+            ["power spectrum index", "amplitude of matter fluctations"]):
+        if key not in cosmology.meta:
+            msg = (f"The cosmology object metadata needs a value for `{key}`, "
+                   f"the {desc}.")
+            raise ValueError(msg)
+
+    sigma_8 = cosmology.meta['sigma8']
+    n_s = cosmology.meta['n']
+
+    try:
+        import camb
+    except ImportError:
+        msg = "CAMB needs to be installed for this operation."
+        raise ImportError(msg)
+
+    h = cosmology.H0.to(u.km / u.s / u.Mpc).value / 100
+    a_s = 2e-9  # initial guess
+    m_nu = (np.zeros(0) if cosmology.m_nu is None else
+            cosmology.m_nu.to(u.eV).value)
+
+    # Note that astropy considers all neutrinos for Onu but CAMB only takes
+    # into account massive neutrinos for "nu".
+    pars = camb.set_params(
+        H0=100 * h, omch2=(cosmology.Om0 - cosmology.Ob0) * h**2,
+        ombh2=cosmology.Ob0 * h**2,
+        omnuh2=(
+            cosmology.Onu0 - 0.227107318 * cosmology.Ogamma0 * cosmology.Neff *
+            np.mean(m_nu == 0)) * h**2,
+        TCMB=cosmology.Tcmb0.to(u.K).value,
+        num_nu_massless=cosmology.Neff * np.mean(m_nu == 0),
+        num_nu_massive=np.sum(m_nu > 0),
+        nu_mass_eigenstates=len(np.unique(m_nu[m_nu > 0])),
+        nu_mass_numbers=np.unique(m_nu[m_nu > 0], return_counts=True)[1],
+        nu_mass_fractions=[np.average(m_nu == m_nu_i, weights=m_nu) for
+                           m_nu_i in np.unique(m_nu[m_nu > 0])],
+        nu_mass_degeneracies=cosmology.Neff / len(m_nu) * np.unique(
+            m_nu[m_nu > 0], return_counts=True)[1],
+        ns=n_s, As=a_s, NonLinear='NonLinear_pk', kmax=k_max, redshifts=z)
+
+    results = camb.get_results(pars)
+    a_s *= (sigma_8 / results.get_sigma8_0())**2
+    pars.InitPower.set_params(ns=n_s, As=a_s)
+    results = camb.get_results(pars)
+
+    return results
+
+
+def _gaussian_quadrature_2d(f, n_x, x_min, x_max, n_y, y_min, y_max):
+    """Integrate a two-dimensional function using Gaussian quadrature.
+
+    Parameters
+    ----------
+    f : callable
+        Function to integrate.
+    n_x : int
+        Number of points in the x-dimension.
+    x_min : float
+        Lower integration limit for x.
+    x_max : float
+        Upper integration limit for x.
+    n_y : int
+        Number of points in the y-dimension.
+    y_min : float
+        Lower integration limit for y.
+    y_max : float
+        Upper integration limit for y.
+
+    Returns
+    -------
+    integral : float
+        Computed integral.
+
+    """
+    x, w_x = np.polynomial.legendre.leggauss(n_x)
+    x = (x_max - x_min) / 2.0 * x + (x_max + x_min) / 2.0
+    w_x = w_x * (x_max - x_min) / 2.0
+
+    y, w_y = np.polynomial.legendre.leggauss(n_y)
+    y = (y_max - y_min) / 2.0 * y + (y_max + y_min) / 2.0
+    w_y = w_y * (y_max - y_min) / 2.0
+
+    x, y = np.meshgrid(x, y)
+    z = f(x.ravel(), y.ravel())
+    w_z = np.outer(w_x, w_y).T.ravel()
+
+    return np.sum(z * w_z)
+
+
+def lens_magnification_shear_bias(
+        theta, alpha_l, z_l, z_s, cosmology=None, n_z=10, n_ell=1000,
+        bessel_function_zeros=100, k_max=1e3):
     r"""Compute the lens magnification bias to the mean tangential shear.
 
     This function is based on equations (13) and (14) in Unruh et al. (2020).
 
     Parameters
     ----------
-    theta : float or astropy.units.quantity.Quantity
-        Angular separation :math:`\theta` from the lens sample. If not quantity
-        is given, the separation is assumed to be in radians.
+    theta : float, numpy.ndarray or astropy.units.quantity.Quantity
+        Angular separation :math:`\theta` from the lens sample. If it has no
+        unit, assume the value is given in radians.
     alpha_l : float
         Local slope of the flux distribution of lenses near the flux limit.
-    z_l : float
-        Redshift of lens.
-    z_s : float
-        Redshift of source.
-    camb_results : camb.results.CAMBdata
-        CAMB results object that contains information on cosmology and the
-        matter power spectrum.
+    z_l : float or numpy.ndarray
+        Redshift of lens. Can also be a array if ``theta`` is an array.
+    z_s : float or numpy.ndarray
+        Redshift of source. Can also be a array if ``theta`` is an array.
+    cosmology : astropy.cosmology or None, optional
+        Cosmology to assume for calculations. If ``None``, use
+        ``dsigma.default_cosmology``. Note that :math:`\sigma_8` and
+        :math:`n_s` need to be defined in the cosmology's metadata. Default is
+        ``None``.
     n_z : int, optional
         Number of redshift bins used in the integral. Larger numbers will be
-        more accurate.
+        more accurate. Default is 10.
     n_ell : int, optional
         Number of :math:`\ell` bins used in the integral. Larger numbers will
-        be more accurate.
+        be more accurate. Default is 1000.
     bessel_function_zeros : int, optional
         The calculation involves an integral over the second order Bessel
         function :math:`J_2 (\ell \theta)` from :math:`\ell = 0` to
@@ -225,68 +302,54 @@ def lens_magnification_shear_bias(theta, alpha_l, z_l, z_s, camb_results,
         bound with the bessel_function_zeros-th zero point of the Bessel
         function. Larger number should lead to more accurate results. However,
         in practice, this also requires larger `n_ell`. Particularly, `n_ell`
-        should never fall below `bessel_function_zeros`.
+        should never fall below `bessel_function_zeros`. Default is 100.
     k_max : float, optional
-        The maximum wavenumber beyond which the power spectrum is assumed to be
-        0.
+        The maximum wavenumber (in :math:`\mathrm{Mpc}^{-1}`) beyond which the
+        power spectrum is assumed to be 0. Default is 1000.
 
     Returns
     -------
-    et_lm : float
+    gt : float or numpy.ndarray
         Bias in the mean tangential shear due to lens magnification effects.
 
     """
-    camb_interp = camb_results.get_matter_power_interpolator(
-        hubble_units=False, k_hunit=False)
+    cosmology = default_cosmology if cosmology is None else cosmology
 
-    if not isinstance(theta, u.quantity.Quantity):
-        theta = theta * u.rad
-
+    if not isinstance(theta, u.Quantity):
+        theta *= u.rad
     theta = theta.to(u.rad).value
 
-    ell_min = 0
+    r = _to_camb(cosmology, np.linspace(np.amax(z_l), 0, 10))
+    p = r.get_matter_power_interpolator(hubble_units=False, k_hunit=False).P
+
+    def f(theta, z_l, z_s, z, ell):
+        z_u, idx = np.unique(z, return_inverse=True)
+        k = (ell + 0.5) / ((1 + z) * cosmology.angular_diameter_distance(
+            z_u).to(u.Mpc).value[idx])
+        return ((1 + z)**2 * ell * jv(2, ell * theta) *
+                (cosmology.H0 / cosmology.H(z_u)[idx]) *
+                cosmology.angular_diameter_distance_z1z2(z_u, z_l)[idx] /
+                cosmology.angular_diameter_distance(z_l) *
+                cosmology.angular_diameter_distance_z1z2(z_u, z_s)[idx] /
+                cosmology.angular_diameter_distance(z_s) *
+                np.where(k > k_max, 0, np.array(
+                    [np.squeeze(p(z_i, k_i)) for z_i, k_i in zip(z, k)])))
+
     ell_max = np.amax(jn_zeros(2, bessel_function_zeros)) / theta
-    z_min = 0
-    z_max = min(z_l, z_s)
 
-    z, w_z = np.polynomial.legendre.leggauss(n_z)
-    z = (z_max - z_min) / 2.0 * z + (z_max + z_min) / 2.0
-    w_z = w_z * (z_max - z_min) / 2.0
+    if not hasattr(theta, '__len__'):
+        integral = _gaussian_quadrature_2d(
+            partial(f, theta, z_l, z_s), n_z, 0, z_l, n_ell, 0, ell_max)
+    else:
+        if not hasattr(z_l, '__len__'):
+            z_l = np.repeat(z_l, len(theta))
+        if not hasattr(z_s, '__len__'):
+            z_s = np.repeat(z_s, len(theta))
+        integral = np.array([_gaussian_quadrature_2d(
+            partial(f, theta[i], z_l[i], z_s[i]), n_z, 0, z_l[i], n_ell, 0,
+            ell_max[i]) for i in range(len(theta))])
 
-    ell, w_ell = np.polynomial.legendre.leggauss(n_ell)
-    ell = (ell_max - ell_min) / 2.0 * ell + (ell_max + ell_min) / 2.0
-    w_ell = w_ell * (ell_max - ell_min) / 2.0
+    integral = integral * u.Mpc**3  # units for the P(k) used earlier
 
-    int_z = np.array([
-        (1 + z_i)**2 / (2 * np.pi) *
-        camb_results.hubble_parameter(0) /
-        camb_results.hubble_parameter(z_i) *
-        camb_results.angular_diameter_distance2(z_i, z_l) *
-        camb_results.angular_diameter_distance2(z_i, z_s) /
-        camb_results.angular_diameter_distance(z_l) /
-        camb_results.angular_diameter_distance(z_s) for z_i in z])
-
-    d_ang = np.array([
-        camb_results.angular_diameter_distance(z_i) for z_i in z])
-    z = np.tile(z, n_ell)
-    int_z = np.tile(int_z, n_ell)
-    d_ang = np.tile(d_ang, n_ell)
-    w_z = np.tile(w_z, n_ell)
-
-    int_ell = ell * jv(2, ell * theta)
-    ell = np.repeat(ell, n_z)
-    int_ell = np.repeat(int_ell, n_z)
-    w_ell = np.repeat(w_ell, n_z)
-
-    k = (ell + 0.5) / ((1 + z) * d_ang)
-
-    int_z_ell = np.array([camb_interp.P(z[i], k[i]) for i in range(len(k))])
-    int_z_ell = np.where(k > k_max, 0, int_z_ell)
-
-    gamma = np.sum(int_z * int_ell * int_z_ell * w_z * w_ell)
-    gamma = ((gamma * u.Mpc**3) * 9 * camb_results.Params.H0**3 * u.km**3 /
-             u.s**3 / u.Mpc**3 *
-             (camb_results.Params.omch2 + camb_results.Params.ombh2)**2 /
-             (camb_results.Params.H0 / 100)**4 / 4 / c.c**3)
-
-    return 2 * (alpha_l - 1) * gamma.to(u.dimensionless_unscaled).value
+    return (2 * (alpha_l - 1) * 9 * cosmology.H0**3 * cosmology.Om0**2 /
+            (8 * np.pi * c.c**3) * integral).to(u.dimensionless_unscaled).value

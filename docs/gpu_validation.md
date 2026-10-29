@@ -1,5 +1,13 @@
 # Single A100 validation and performance
 
+These measurements describe the original GPU implementation at `ce39d36`,
+before merging upstream 1.2.3. Upstream changed cosmology defaults, little-h
+units and source preparation. The merge was checked with the CPU/GPU regression
+suite; the complete real-catalog timing campaign has not been repeated for
+1.2.3. The catalog benchmark runners in `examples/gpu_validation.py` and
+`examples/gpu_cpu_benchmark.py` use the legacy input adapters and must be run
+from the frozen checkout recorded here.
+
 The complete calibrated type1/UNIONS 1.6.6 acceptance passed on 2026-10-29.
 All five mass bins, 15 radial bins and 64 jackknife regions were tested for both
 components. Every individual jackknife sample was compared before covariance.

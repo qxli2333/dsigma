@@ -1,12 +1,11 @@
-"""Delta sigma pipeline for galaxy-galaxy lensing."""
+"""A Galaxy-Galaxy Lensing Python Package."""
 
-from . import helpers
-from . import jackknife
-from . import physics
-from . import precompute
-from . import stacking
-from . import surveys
+from astropy.cosmology import Planck15
 
-__all__ = ["helpers", "jackknife", "physics", "precompute", "stacking",
-           "surveys"]
-__version__ = '1.1.0'
+default_cosmology = Planck15
+
+from . import helpers, jackknife, physics, precompute, stacking  # noqa: E402
+
+__all__ = ['default_cosmology', 'helpers', 'jackknife', 'physics',
+           'precompute', 'stacking']
+__version__ = '1.2.3'
