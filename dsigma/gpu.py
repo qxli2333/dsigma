@@ -1,9 +1,12 @@
-"""Optional single-device FP64 backend. CuPy is imported only on GPU use.
+"""Optional FP64 GPU backend. CuPy is imported only on GPU use.
 
 A GPUSession owns a snapshot of one source catalog. Do not mutate that catalog
 between calls; create a new session when source data or preparation options change.
 """
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from queue import Empty, Queue
+from threading import Lock
 from functools import lru_cache, wraps
 from pathlib import Path
 
@@ -120,6 +123,25 @@ class DeviceCatalog:
         return table
 
 
+@lru_cache(maxsize=16)
+def _pair_geometry(nside):
+    from astropy import constants as c
+    from astropy import units as u
+    from astropy_healpix import HEALPix
+    hp = HEALPix(nside, order='ring')
+    pixrad = np.deg2rad(1.05 * hp.pixel_resolution.to_value(u.deg))
+    factor = (1e-6 * c.c**2 / (4 * np.pi * c.G)).to_value(u.Msun / u.pc)
+    return hp, pixrad, factor
+
+
+def _pixel_xyz(hp, pixels):
+    from astropy import units as u
+    lon, lat = hp.healpix_to_lonlat(pixels)
+    lon, lat = lon.to_value(u.rad), lat.to_value(u.rad)
+    return np.column_stack((np.cos(lon)*np.cos(lat),
+                            np.sin(lon)*np.cos(lat), np.sin(lat)))
+
+
 class GPUSession:
     """Reuse source buffers and HEALPix spatial index on the current device.
 
@@ -139,6 +161,7 @@ class GPUSession:
         self.lens_chunk = int(lens_chunk)
         self.source = None
         self.source_token = None
+        self.tree = None
         self.kernel = cp.RawKernel(Path(__file__).with_name('gpu_pairs.cu').read_text(),
                                    'pairs', options=('--std=c++11', '--fmad=false'))
         self._source_table = None
@@ -162,9 +185,6 @@ class GPUSession:
 
     def pair(self, ul, nl, us, ns, edges, lens, source, keys, nside,
              comoving, weighting, source_token):
-        from astropy import constants as c
-        from astropy import units as u
-        from astropy_healpix import HEALPix
         from scipy.spatial import cKDTree
         cp = cupy()
         if cp.cuda.Device().id != self.device:
@@ -173,11 +193,8 @@ class GPUSession:
                  'w', 'e_1', 'e_2', 'z_l_max', 'm', 'e_rms', 'm_sel',
                  'R_11', 'R_12', 'R_21', 'R_22']
         lkeys = skeys[:6]
-        hp = HEALPix(nside, order='ring')
-        def xyz(pixels):
-            lon, lat = hp.healpix_to_lonlat(pixels)
-            return np.column_stack((np.cos(lon) * np.cos(lat),
-                                    np.sin(lon) * np.cos(lat), np.sin(lat)))
+        hp, pixrad, factor = _pair_geometry(nside)
+        lens_xyz = _pixel_xyz(hp, ul)
         if self.source_token != source_token:
             if self.source_token is not None:
                 raise ValueError('A session is bound to one source preparation; create a new session.')
@@ -195,7 +212,8 @@ class GPUSession:
                 # are staged per tile. The spatial index is still reused.
                 self.source = None
                 self.zbin = cp.empty(0, dtype=cp.int64)
-            self.tree = cKDTree(xyz(us))
+            if self.tree is None:
+                self.tree = cKDTree(_pixel_xyz(hp, us))
             self.source_token = source_token
         ld = cp.asarray(np.stack([lens[k] for k in lkeys]))
         nb = edges.shape[1] - 1
@@ -215,21 +233,24 @@ class GPUSession:
                     + ed.nbytes + sum(a.nbytes for a in out.values()))
         if resident > self.budget * .8:
             raise MemoryError('Catalog results exceed GPU session memory budget.')
-        factor = (1e-6 * c.c**2 / (4 * np.pi * c.G)).to(u.Msun / u.pc).value
         starts_l = np.r_[0, nl[:-1]]
         starts_s = np.r_[0, ns[:-1]]
-        pixrad = np.deg2rad(1.05 * hp.pixel_resolution.to(u.deg).value)
         # Combine independent pixels into launches to amortize launch overhead.
         # Tasks remain sorted by lens, then pixel/range; segment loops fix the reduction order.
         bytes_per_task = 2 * nb * (11*8+8)
         if self.source is None:
             bytes_per_task += 2 * self.source_chunk * 144
         max_tasks = max(1, min(131072, (self.budget-resident)//bytes_per_task))
-        pending = []
+        # Keep the original flush boundaries and source order without creating
+        # a Python tuple for every lens/source segment.
+        pending = np.empty((max_tasks, 3), dtype=np.int64)
+        n_pending = 0
         def flush():
-            if not pending:
+            nonlocal n_pending
+            if not n_pending:
                 return
-            host_tasks = np.asarray(pending, dtype=np.int64)
+            # Streaming rewrites source offsets; own the host launch snapshot.
+            host_tasks = pending[:n_pending].copy()
             ntask = len(host_tasks)
             lens_ids, starts = np.unique(host_tasks[:, 0], return_index=True)
             sd, zd, ns_device = self.source, self.zbin, len(source['z'])
@@ -263,19 +284,25 @@ class GPUSession:
             for j, key in enumerate(statkeys):
                 if key in out:
                     out[key][ids_d] += summed[:, j, :]
-            pending.clear()
+            n_pending = 0
         lenses_pending = 0
         for p, (lo, hi) in enumerate(zip(starts_l, nl)):
             radius = np.sqrt(np.max(edges[lo:hi, -1])) + 2 * pixrad
-            candidates = sorted(self.tree.query_ball_point(xyz(ul[p:p+1])[0], radius))
+            candidates = sorted(self.tree.query_ball_point(lens_xyz[p], radius))
             ranges = [(a, min(a + self.source_chunk, ns[s]))
                       for s in candidates for a in range(starts_s[s], ns[s], self.source_chunk)]
             if not ranges:
                 continue
+            range_array = np.asarray(ranges, dtype=np.int64)
             for il in range(lo, hi):
-                for a, b in ranges:
-                    pending.append((il, a, b))
-                    if len(pending) >= max_tasks:
+                position = 0
+                while position < len(ranges):
+                    take = min(len(ranges)-position, max_tasks-n_pending)
+                    pending[n_pending:n_pending+take, 0] = il
+                    pending[n_pending:n_pending+take, 1:] = range_array[position:position+take]
+                    n_pending += take
+                    position += take
+                    if n_pending >= max_tasks:
                         flush()
                         lenses_pending = 0
                 lenses_pending += 1
@@ -284,6 +311,180 @@ class GPUSession:
                     lenses_pending = 0
         flush()
         return out
+
+
+class MultiGPUSession:
+    """Parallel lens pairing on explicitly selected GPUs on one host.
+
+    Source preparation and the spatial index are shared in host memory. Each
+    device owns a persistent worker, stream and single-device source cache.
+    Pair results are gathered on the host; ``return_device=True`` in precompute
+    uploads the complete result to ``devices[0]``. Use that device's context for
+    subsequent device operations. Do not overlap precompute calls on one session.
+    """
+    def __init__(self, devices, memory_fraction=0.7, source_chunk=256, lens_chunk=128):
+        devices = tuple(devices)
+        if not devices or any(isinstance(d, (bool, np.bool_)) or
+                              not isinstance(d, (int, np.integer)) for d in devices):
+            raise ValueError('devices must be a non-empty sequence of integer device IDs.')
+        if len(set(devices)) != len(devices):
+            raise ValueError('devices must not contain duplicate IDs.')
+        if not 0 < memory_fraction <= 0.7:
+            raise ValueError('memory_fraction must be in (0, 0.7].')
+        if source_chunk < 1 or lens_chunk < 1:
+            raise ValueError('Chunk sizes must be positive.')
+        cp = cupy()
+        count = cp.cuda.runtime.getDeviceCount()
+        if any(d < 0 or d >= count for d in devices):
+            raise ValueError('Device IDs must refer to visible CUDA devices.')
+        self.devices = tuple(int(d) for d in devices)
+        self.device = self.devices[0]
+        self.lens_chunk = int(lens_chunk)
+        self.source_token = None
+        self._prepared_source = None
+        self._source_table = self._table_n = self._cut = None
+        self.tree = None
+        self._lock = Lock()
+        self._closed = False
+        self._executors = [ThreadPoolExecutor(max_workers=1) for _ in devices]
+        self._workers = []
+
+        def initialize(device):
+            with cp.cuda.Device(device):
+                stream = cp.cuda.Stream(non_blocking=True)
+                with stream:
+                    worker = GPUSession(memory_fraction, source_chunk, lens_chunk)
+                return worker, stream
+
+        futures = [executor.submit(initialize, device)
+                   for executor, device in zip(self._executors, self.devices)]
+        try:
+            # Collect every successful worker even when another initializer fails.
+            error = None
+            for future in futures:
+                try:
+                    self._workers.append(future.result())
+                except Exception as exc:
+                    self._workers.append(None)
+                    if error is None:
+                        error = exc
+            if error is not None:
+                raise error
+        except BaseException:
+            self.close()
+            raise
+
+    def __enter__(self):
+        self._ensure_open()
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def _ensure_open(self):
+        if self._closed:
+            raise RuntimeError('MultiGPUSession is closed.')
+
+    def close(self):
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            cp = cupy()
+
+            def release(entry):
+                if entry is not None:
+                    worker, stream = entry
+                    with cp.cuda.Device(worker.device):
+                        stream.synchronize()
+                        worker.close()
+
+            futures = [executor.submit(release, entry)
+                       for executor, entry in zip(self._executors, self._workers)]
+            try:
+                for future in futures:
+                    future.result()
+            finally:
+                for executor in self._executors:
+                    executor.shutdown(wait=True)
+                self._workers.clear()
+                self.source_token = self.tree = self._prepared_source = None
+                self._source_table = self._table_n = self._cut = None
+
+    def pair(self, ul, nl, us, ns, edges, lens, source, keys, nside,
+             comoving, weighting, source_token):
+        from scipy.spatial import cKDTree
+        with self._lock:
+            self._ensure_open()
+            if self.source_token is not None and self.source_token != source_token:
+                raise ValueError('A session is bound to one source preparation; create a new session.')
+            cp = cupy()
+            hp, pixrad, _ = _pair_geometry(nside)
+            lens_xyz = _pixel_xyz(hp, ul)
+
+            if self.tree is None:
+                self.tree = cKDTree(_pixel_xyz(hp, us))
+            self.source_token = source_token
+            # Bound task results while allowing tasks to span small pixels, so
+            # sparse pixels do not force many tiny GPU launches.
+            source_counts = np.diff(np.r_[0, ns])
+            costs = np.empty(len(lens['z']), dtype=np.float64)
+            for p, (lo, hi) in enumerate(zip(np.r_[0, nl[:-1]], nl)):
+                radius = np.sqrt(np.max(edges[lo:hi, -1])) + 2*pixrad
+                candidates = self.tree.query_ball_point(lens_xyz[p], radius)
+                costs[lo:hi] = max(1, int(source_counts[candidates].sum()))
+            tasks = [(float(costs[lo:lo+self.lens_chunk].sum()), lo,
+                      min(lo+self.lens_chunk, len(costs)))
+                     for lo in range(0, len(costs), self.lens_chunk)]
+            pending = Queue()
+            for task in sorted(tasks, reverse=True):
+                pending.put(task)
+            output = {key: np.empty((len(lens['z']), edges.shape[1]-1),
+                                    dtype=np.int64 if key == 'sum 1' else np.float64)
+                      for key in keys}
+
+            def run(entry):
+                worker, stream = entry
+                worker.tree = self.tree
+                with cp.cuda.Device(worker.device), stream:
+                    try:
+                        while True:
+                            try:
+                                _, lo, hi = pending.get_nowait()
+                            except Empty:
+                                break
+                            local = {key: value.reshape(len(lens['z']), -1)[lo:hi].ravel()
+                                     if key == 'sigma_crit_eff' else value[lo:hi]
+                                     for key, value in lens.items()}
+                            first = np.searchsorted(nl, lo, side='right')
+                            last = np.searchsorted(nl, hi-1, side='right')+1
+                            local_nl = np.minimum(nl[first:last], hi)-lo
+                            result = worker.pair(
+                                ul[first:last], local_nl, us, ns, edges[lo:hi],
+                                local, source, keys, nside, comoving, weighting, source_token)
+                            self._gather(result, output, lo, hi, stream)
+                            del result
+                    finally:
+                        stream.synchronize()
+
+            futures = [executor.submit(run, entry)
+                       for executor, entry in zip(self._executors, self._workers)]
+            error = None
+            for future in futures:
+                try:
+                    future.result()
+                except Exception as exc:
+                    if error is None:
+                        error = exc
+            if error is not None:
+                raise error
+            return output
+
+    @staticmethod
+    def _gather(result, output, lo, hi, stream):
+        cp = cupy()
+        for key, value in result.items():
+            output[key][lo:hi] = cp.asnumpy(value, stream=stream)
 
 
 @_nvtx('dsigma.region_aggregation')

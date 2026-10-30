@@ -207,10 +207,11 @@ def precompute(
 
     backend : {'cpu', 'gpu'}, optional
         Execution backend. CPU remains the default; GPU requires CuPy/CUDA.
-    session : dsigma.gpu.GPUSession, optional
+    session : dsigma.gpu.GPUSession or dsigma.gpu.MultiGPUSession, optional
         Reuse immutable source data and its spatial index across GPU calls.
     return_device : bool, optional
-        Return a DeviceCatalog without transferring statistics to the host.
+        Return a DeviceCatalog. MultiGPUSession gathers through host memory
+        and uploads the result to its first device.
     cross : bool, optional
         Also accumulate the cross component in the same GPU pairing pass.
         Its sign matches rotating sources to (e_2, -e_1).
@@ -298,8 +299,10 @@ def precompute(
 
     source_cache = None
     if backend == 'gpu':
-        from .gpu import GPUSession
+        from .gpu import GPUSession, MultiGPUSession
         session = GPUSession() if session is None else session
+        if isinstance(session, MultiGPUSession):
+            session._ensure_open()
         token = (id(table_s_original), nside, repr(cosmology),
                  id(lens_source_cut) if not np.isscalar(lens_source_cut) else lens_source_cut,
                  id(table_n), comoving)
@@ -454,9 +457,12 @@ def precompute(
             table_engine_l, table_engine_s, key_list, nside, comoving,
             weighting, token)
         session._prepared_source = (raw_pix_s, argsort_pix_s, table_engine_s, pix_s, n_pix_s)
-        inv = cp.asarray(np.argsort(argsort_pix_l))
+        multi = isinstance(session, MultiGPUSession)
+        xp = np if multi else cp
+        convert = np.asarray if multi else _to_device
+        inv = xp.asarray(np.argsort(argsort_pix_l))
         columns = {k: v[inv] for k, v in device_results.items()}
-        columns['sum w_ls z_l'] = _to_device(table_l['z'])[:, None] * columns['sum w_ls']
+        columns['sum w_ls z_l'] = convert(table_l['z'])[:, None] * columns['sum w_ls']
         density_unit = cu.littleh * u.Msun / u.pc**2
         units = {key: density_unit for key in columns if 'sigma_crit' in key}
         if table_c is not None:
@@ -464,21 +470,24 @@ def precompute(
                 photo_z_dilution_factor, table_l['z'].data, table_c,
                 cosmology=cosmology, weighting=weighting)
             for key in list(units):
-                columns[key + ' f_bias'] = columns[key] * cp.asarray(f_bias)[:, None]
+                columns[key + ' f_bias'] = columns[key] * xp.asarray(f_bias)[:, None]
                 units[key + ' f_bias'] = density_unit
             delta_z_s = interpolate_over_redshift(
                 mean_photo_z_offset, table_l['z'], table_c,
                 cosmology=cosmology, weighting=weighting)
-            columns['sum w_ls z_s'] -= columns['sum w_ls'] * cp.asarray(delta_z_s)[:, None]
+            columns['sum w_ls z_s'] -= columns['sum w_ls'] * xp.asarray(delta_z_s)[:, None]
         meta = dict(table_l.meta, bins=bins, comoving=comoving,
                     cosmology=cosmology, weighting=weighting)
         if return_device:
             for key in ['w_sys', 'field_jk']:
                 if key in table_l.colnames:
-                    columns[key] = _to_device(table_l[key])
+                    columns[key] = convert(table_l[key])
+            if multi:
+                with cp.cuda.Device(session.device):
+                    columns = {key: _to_device(value) for key, value in columns.items()}
             return DeviceCatalog(columns, meta, units)
         for key, value in columns.items():
-            table_l[key] = cp.asnumpy(value)
+            table_l[key] = value if multi else cp.asnumpy(value)
             if key in units:
                 table_l[key].unit = units[key]
         table_l.meta.update(meta)

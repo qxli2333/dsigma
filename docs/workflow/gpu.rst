@@ -41,7 +41,10 @@ The session reserves at most 70% of initially free memory for its live working
 arrays, excluding caller-owned results and CuPy's retained allocator cache.
 Sources larger than half that budget are staged from host memory in pixel
 ranges. Lower ``memory_fraction``, ``source_chunk`` or ``lens_chunk`` for other
-memory consumers. The host must still accommodate the prepared source catalog.
+memory consumers. The host must still accommodate the prepared source catalog. Host task ranges
+are filled in a bounded NumPy buffer, retaining the source traversal and flush
+order. Numeric pixel centers and cached geometry constants reduce repeated
+Python and unit-conversion work for multi-GPU workers.
 
 ``return_device=True`` returns a ``DeviceCatalog`` containing statistics,
 weights and any existing region labels. Device masks select lenses;
@@ -54,6 +57,68 @@ Astropy table on the host.
 ``cross=True`` accumulates both components in one pass. The cross sign matches
 replacing ``(e_1, e_2)`` with ``(e_2, -e_1)`` in the CPU source catalog. Matrix
 response uses the same geometry as the existing rotated-source workflow.
+
+Single-host multi-GPU pairing
+-----------------------------
+
+Select devices explicitly; their IDs are relative to ``CUDA_VISIBLE_DEVICES``::
+
+    import cupy as cp
+    from dsigma.gpu import MultiGPUSession
+
+    with MultiGPUSession(devices=[0, 1]) as session:
+        result = precompute(lenses, sources, bins, backend='gpu',
+                            session=session, cross=True, return_device=True)
+        with cp.cuda.Device(session.device):
+            signal = excess_surface_density(result, backend='gpu')
+            covariance, samples = jackknife_resampling(
+                excess_surface_density, result, backend='gpu', return_samples=True)
+
+Each selected device owns one persistent worker thread, CUDA stream and source
+cache. Host source preparation and its spatial index are shared. Lens tasks are
+bounded by ``lens_chunk`` and scheduled by estimated candidate-source work.
+Each lens is computed on one GPU, preserving source traversal and reduction
+order within that task. FP64 results retain the single-device tolerances;
+bitwise equality of floating sums across task boundaries is not required.
+Sources are replicated on each active GPU when they fit, otherwise streamed
+using that GPU's independent ``memory_fraction`` budget.
+
+Results are gathered through host memory and restored to input lens order.
+The default returns the input Astropy table with statistics attached.
+``return_device=True`` uploads the complete result to ``devices[0]``; this
+requires enough memory on that GPU. Stacking and jackknife run on this first
+GPU, using its context as shown above. This path does not require peer access,
+MPI or NCCL, and does not distribute stacking, jackknife or covariance.
+
+Reuse the session for lens and random catalogs with the same immutable source
+preparation. Do not overlap ``precompute`` calls on one session. Closing waits
+for workers and releases their references; it is idempotent. A closed session
+cannot be reused. Worker failures propagate after outstanding workers finish,
+without attaching partial statistics to the input table.
+
+``examples/gpu_multi_device.py`` is a fixed-seed synthetic benchmark comparing
+the existing single-device path and 1/2/4-device sessions. It checks a small
+fresh CPU reference and compares all full-catalog statistics to the single GPU.
+It records first-use and repeated warm timings, host preparation, pairing plus
+gather wall time, finalization and profiles. By default, worker-stage profiling
+and memory sampling are disabled to avoid changing measured scheduling. Use
+``--profile-workers --sample-memory`` in a separate diagnostic run to collect
+worker stages and sampled per-device memory. Worker pairing and gather busy
+times are summed across devices and overlap; they must not be added to wall
+times. Worker instrumentation synchronizes pairing before gather. First-use timings reuse any existing compilation cache;
+they are not empty-cache compilation measurements. Sampled global device memory
+includes other processes; CuPy pool usage describes this process.
+
+On Perlmutter, from the repository root::
+
+    mkdir -p /pscratch/sd/q/qinxunli/dsigma_multi_gpu
+    sbatch examples/gpu_multi_device.slurm
+
+Adjust the account and ``DSIGMA_PYTHON`` for another environment. The example
+requests one four-GPU node for 30 minutes, runs GPU regression tests and writes
+JSON and logs to scratch. It does not rerun historical survey acceptance.
+Actual speedup depends on task size, host scheduling, source transfer and gather
+costs; additional GPUs do not guarantee lower end-to-end latency.
 
 Jackknife processing
 --------------------
