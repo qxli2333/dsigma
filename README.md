@@ -49,8 +49,9 @@ Documentation for ``dsigma`` with concept introductions, examples, and API docum
 
 Generative AI was used to search for potential bugs in the code and to improve the documentation by finding typos and suggesting minor rewrites. The core developers did not use AI to write any part of the ``dsigma`` code itself. Code contributions from other developers may use AI, as described in the respective pull requests, and are carefully vetted by the core developers.
 
-An optional single NVIDIA GPU backend supports FP64 pair computation, stacking,
+An optional NVIDIA GPU backend supports FP64 pair computation, stacking,
 batched jackknife samples, and covariance. Install with `pip install '.[gpu]'`
 in a CUDA 12 environment and select `backend='gpu'`. See
 [GPU workflow](docs/workflow/gpu.rst) and the standalone
-[example](examples/gpu_single_device.py). CPU remains the default.
+[example](examples/gpu_single_device.py). For single-host multi-GPU pairing, pass a `MultiGPUSession(devices=[0, 1])`.
+CPU remains the default.
